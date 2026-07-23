@@ -1,75 +1,93 @@
-# ESP32-S3 RS485 (Modbus RTU)
+# ESP32-S3 RS485 Sensor Gateway
 
-This is a beginner-friendly PlatformIO project for reading Modbus RTU data over RS485 using an ESP32-S3.
+PlatformIO firmware for ESP32-S3 that:
 
-## Windows ME31 simulator
+- polls Modbus RTU sensors over RS485
+- serves a live sensor web page over Wi-Fi AP
+- exposes JSON at `/api/sensors`
+- broadcasts sensor snapshots over ESP-NOW
 
-If you want to simulate the ME31 modules directly from a Windows 10 PC over a USB-to-RS485 adapter, use [windows_me31_simulator.py](windows_me31_simulator.py).
+## Features
 
-Requirements:
+- Modbus RTU master using `ModbusMaster`
+- Multi-slave channel table with per-channel scaling
+- Current-loop conversion (4-20 mA -> engineering units)
+- Direct scaled values (`engineering = raw * scale`)
+- Built-in access point + HTTP dashboard
+- ESP-NOW broadcast packet for downstream nodes
 
-- Python 3
-- `pyserial` installed with `pip install pyserial`
+## Hardware pins
 
-Example:
+- GPIO 17 -> RS485 TX (DI)
+- GPIO 18 -> RS485 RX (RO)
+- GPIO 21 -> RS485 direction (DE/RE)
+- GPIO 47 -> CH1 control (set HIGH)
 
-```bash
-python windows_me31_simulator.py --port COM11 --baud 57600
-```
+## Active communication settings
 
-Use `--verbose` to print raw Modbus frames while testing.
+- Modbus RTU over RS485
+- Baud rate: 57600
+- Framing: 8N1
+- USB serial monitor: 115200
+- Poll interval: 1000 ms
+- ESP-NOW send interval: 500 ms
 
-## Hardware pins used
+## Sensor channel map (current firmware)
 
-- `GPIO 17` -> RS485 TX (DI)
-- `GPIO 18` -> RS485 RX (RO)
-- `GPIO 21` -> RS485 direction (DE/RE)
-- `GPIO 47` -> CH1 control (kept HIGH)
+### Slave 1 (Input Registers / FC04)
 
-## Active protocol settings
+- 0x0064: Water pressure, 4-20 mA -> -1.0 to 2.0 bar
+- 0x0065: Fuel pressure, 4-20 mA -> 0.0 to 0.5 bar
+- 0x0066: Reserved / unused on this node
+- 0x0067: Reserved / unused
 
-- Modbus RTU over RS-485
-- Baud rate: `57600`
-- Framing: `8N1`
-- Slave 1 reads use Input Registers (`FC04`)
-- Slave 2 reads use Holding Registers (`FC03`)
+### Slave 2 (Input Registers / FC04)
 
-## Active channel map on this ESP
+- 0x0190: Cylinder left temp, value = raw * 0.1 C
+- 0x0191: Cylinder right temp, value = raw * 0.1 C
+- 0x0192: Motor ambient temp, value = raw * 0.1 C
+- 0x0193: Air ambient temp, value = raw * 0.1 C
+- 0x0194-0x0197: Reserved / unused
 
-- Slave 1, `0x0064` (FC04): Water Pressure, 4-20 mA mapped to -1.0..2.0 bar
-- Slave 1, `0x0065` (FC04): Fuel Pressure, 4-20 mA mapped to 0.0..0.5 bar
-- Slave 1, `0x0066` (FC04): Reserved (Fuel Level is implemented on another ESP)
-- Slave 1, `0x0067` (FC04): Reserved / unused
-- Slave 2, `0x0000` (FC03): Left Cylinder Bank Temp, `value = raw * 0.1` C
-- Slave 2, `0x0001` (FC03): Right Cylinder Bank Temp, `value = raw * 0.1` C
-- Slave 2, `0x0003` (FC03): Motor Ambient Temp, `value = raw * 0.1` C
-- Slave 2, `0x0004` (FC03): Air Ambient Temp, `value = raw * 0.1` C
+### Slave 3 (Holding Registers / FC03, disabled by default)
 
-## Before first test
+- 0x0000: Exhaust gas left temp, value = raw * 0.1 C
+- 0x0001: Exhaust gas right temp, value = raw * 0.1 C
+- 0x0002-0x0007: Reserved / unused
 
-1. Verify your ME31 Modbus settings:
-   - Slave IDs `1` and `2`
-   - Baud rate
-   - Parity / stop bits
-   - Register addresses to read
-2. If needed, update communication constants in `src/main.cpp`:
-   - `MODBUS_BAUDRATE`
-   - `MODBUS_READ_RETRIES`
-   - `MODBUS_RETRY_DELAY_MS`
-   - `MODBUS_SLAVE_SWITCH_SETTLE_MS`
-3. If register mapping changes, edit the `SENSOR_CHANNELS` table in `src/main.cpp`.
+## Web interface
 
-## Build and upload in VS Code
+- AP SSID: `ESP32-S3-RS485`
+- Open browser to the AP IP shown in serial log (typically `http://192.168.4.1`)
+- Live JSON endpoint: `http://192.168.4.1/api/sensors`
 
-1. Open this project folder in VS Code.
-2. Make sure PlatformIO extension is installed.
-3. In PlatformIO sidebar:
-   - Build
-   - Upload
-   - Monitor
-How to use:
-Press Ctrl+Shift+P
-Choose Tasks: Run Task
-Select the compound task you want
+Each sensor object includes:
 
-Serial monitor speed is `115200`.
+- `name`, `unit`, `address`
+- `raw`, `has_current`, `current_ma`
+- `engineering_value`, `valid`, `active`, `tentative`
+- `status`
+
+## Build, upload, and monitor (VS Code)
+
+Use the predefined tasks:
+
+1. `RS485: Build (esp32-s3-main)`
+2. `RS485: Upload (esp32-s3-main)`
+3. `RS485: Monitor (esp32-s3-main)`
+4. `RS485: Build + Upload (esp32-s3-main)`
+
+Quick run path:
+
+1. Press Ctrl+Shift+P
+2. Run `Tasks: Run Task`
+3. Choose one of the tasks above
+
+## Configuration notes
+
+If your Modbus setup differs, update constants and channel table in `src/main.cpp`:
+
+- communication timing/baud
+- enabled slaves (`ENABLE_SLAVE_1/2/3`)
+- register type (Input vs Holding)
+- per-channel scaling and units

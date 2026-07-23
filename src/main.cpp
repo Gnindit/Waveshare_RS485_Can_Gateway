@@ -45,7 +45,11 @@ static const uint16_t MODBUS_RETRY_DELAY_MS = 20;
 static const uint16_t MODBUS_SLAVE_SWITCH_SETTLE_MS = 3;
 static const uint8_t ESP_NOW_BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 static const uint8_t WIFI_AP_CHANNEL = 1;
-static const uint8_t ESP_NOW_MAX_BROADCAST_SENSORS = 16;
+// Keep this above the configured channel count so ESP-NOW includes all active channels.
+static const uint8_t ESP_NOW_MAX_BROADCAST_SENSORS = 24;
+static const bool ENABLE_SLAVE_1 = true;
+static const bool ENABLE_SLAVE_2 = true;
+static const bool ENABLE_SLAVE_3 = true;
 
 struct __attribute__((packed)) EspNowSensorSnapshot {
   uint8_t active;
@@ -70,35 +74,58 @@ struct __attribute__((packed)) EspNowBroadcastPacket {
 static const uint32_t ESP_NOW_MAGIC = 0x574E5053;  // "SPNW" little-endian
 static const uint8_t ESP_NOW_VERSION = 1;
 
+// Slave id 1: 4x4-20 mA.
+// Slave id 2: 8 x PT100.
+// Slave id 3: 8 x K-type.
 // Fuel pressure sensor is 4-20 mA, 0-0.5 bar scale.
 // Water pressure sensor is 4-20 mA, -1 to 2 bar scale.
 // Fuel level is intentionally deferred to another ESP node; 0x0066 stays reserved here.
 // Temperature sensors are direct scaled with a factor of 0.1 (e.g., raw value of 250 = 25.0 C).
 static const SensorChannel SENSOR_CHANNELS[] = {
-  {"Water Pressure", "bar", 1, 0x0064, SensorRegisterType::Input, SensorValueMode::CurrentLoop,
-   4.0f, 20.0f, -1.0f, 2.0f, 0.0f, true, false},
-  {"Fuel Pressure", "bar", 1, 0x0065, SensorRegisterType::Input, SensorValueMode::CurrentLoop,
-   4.0f, 20.0f, 0.0f, 0.5f, 0.0f, true, false},
-  {"Reserved / Unused", "", 1, 0x0066, SensorRegisterType::Input,
-   SensorValueMode::CurrentLoop, 4.0f, 18.4f, 0.0f, 100.0f, 0.0f, false, false},
+  //Slave id 1
+  {"Water pressure", "bar", 1, 0x0064, SensorRegisterType::Input, SensorValueMode::CurrentLoop,
+  4.0f, 20.0f, -1.0f, 2.0f, 0.0f, ENABLE_SLAVE_1, false},
+  {"Fuel pressure", "bar", 1, 0x0065, SensorRegisterType::Input, SensorValueMode::CurrentLoop,
+  4.0f, 20.0f, 0.0f, 0.5f, 0.0f, ENABLE_SLAVE_1, false},
+  {"Reserved / Unused", "", 1, 0x0066, SensorRegisterType::Input, SensorValueMode::CurrentLoop,
+   4.0f, 18.4f, 0.0f, 100.0f, 0.0f, false, false},
   {"Reserved / Unused", "", 1, 0x0067, SensorRegisterType::Input, SensorValueMode::CurrentLoop,
    4.0f, 20.0f, 0.0f, 0.0f, 0.0f, false, false},
-  {"Left Cylinder Bank Temp", "C", 2, 0x0000, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
-   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, true, false},
-  {"Right Cylinder Bank Temp", "C", 2, 0x0001, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
-   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, true, false},
-  {"Motor Ambient Temp", "C", 2, 0x0002, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
-   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, true, false},
-  {"Air Ambient Temp", "C", 2, 0x0003, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
-   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, true, false},
-  {"Reserved / Unused", "C", 2, 0x0004, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+  //Slave id 2
+  {"Cylinder left temp", "C", 2, 0x0190, SensorRegisterType::Input, SensorValueMode::DirectScaled,
+  0.0f, 0.0f, 0.0f, 0.0f, 0.1f, ENABLE_SLAVE_2, false},
+  {"Cylinder right temp", "C", 2, 0x0191, SensorRegisterType::Input, SensorValueMode::DirectScaled,
+  0.0f, 0.0f, 0.0f, 0.0f, 0.1f, ENABLE_SLAVE_2, false},
+  {"Motor ambient temp", "C", 2, 0x0192, SensorRegisterType::Input, SensorValueMode::DirectScaled,
+  0.0f, 0.0f, 0.0f, 0.0f, 0.1f, ENABLE_SLAVE_2, false},
+  {"Air ambient temp", "C", 2, 0x0193, SensorRegisterType::Input, SensorValueMode::DirectScaled,
+  0.0f, 0.0f, 0.0f, 0.0f, 0.1f, ENABLE_SLAVE_2, false},
+  {"Reserved / Unused", "C", 2, 0x0194, SensorRegisterType::Input, SensorValueMode::DirectScaled,
    0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
-  {"Reserved / Unused", "C", 2, 0x0005, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+  {"Reserved / Unused", "C", 2, 0x0195, SensorRegisterType::Input, SensorValueMode::DirectScaled,
    0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
-  {"Reserved / Unused", "C", 2, 0x0006, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+  {"Reserved / Unused", "C", 2, 0x0196, SensorRegisterType::Input, SensorValueMode::DirectScaled,
    0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
-  {"Reserved / Unused", "C", 2, 0x0007, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+  {"Reserved / Unused", "C", 2, 0x0197, SensorRegisterType::Input, SensorValueMode::DirectScaled,
    0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
+  //Slave id 3
+  {"Exhaust gas left temp", "C", 3, 0x0000, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+    0.0f, 0.0f, 0.0f, 0.0f, 0.1f, ENABLE_SLAVE_3, false},
+  {"Exhaust gas right temp", "C", 3, 0x0001, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+    0.0f, 0.0f, 0.0f, 0.0f, 0.1f, ENABLE_SLAVE_3, false},
+  {"Reserved / Unused", "C", 3, 0x0002, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
+  {"Reserved / Unused", "C", 3, 0x0003, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
+  {"Reserved / Unused", "C", 3, 0x0004, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
+  {"Reserved / Unused", "C", 3, 0x0005, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
+  {"Reserved / Unused", "C", 3, 0x0006, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
+  {"Reserved / Unused", "C", 3, 0x0007, SensorRegisterType::Holding, SensorValueMode::DirectScaled,
+   0.0f, 0.0f, 0.0f, 0.0f, 0.1f, false, false},
+
   };
 
 static const size_t SENSOR_CHANNEL_COUNT =
@@ -124,6 +151,8 @@ uint32_t modbusSlave1OkCount = 0;
 uint32_t modbusSlave1FailCount = 0;
 uint32_t modbusSlave2OkCount = 0;
 uint32_t modbusSlave2FailCount = 0;
+uint32_t modbusSlave3OkCount = 0;
+uint32_t modbusSlave3FailCount = 0;
 uint32_t pollCycleCount = 0;
 uint32_t pollOverrunCount = 0;
 uint32_t pollDurationMinMs = 0xFFFFFFFF;
@@ -281,6 +310,8 @@ void pollModbusChannel(size_t index) {
       ++modbusSlave1OkCount;
     } else if (channel.slaveId == 2) {
       ++modbusSlave2OkCount;
+    } else if (channel.slaveId == 3) {
+      ++modbusSlave3OkCount;
     }
     reading.rawValue = rawValue;
     reading.hasCurrentMa = channel.valueMode == SensorValueMode::CurrentLoop;
@@ -327,6 +358,8 @@ void pollModbusChannel(size_t index) {
       ++modbusSlave1FailCount;
     } else if (channel.slaveId == 2) {
       ++modbusSlave2FailCount;
+    } else if (channel.slaveId == 3) {
+      ++modbusSlave3FailCount;
     }
     reading.hasValidReading = false;
     reading.hasCurrentMa = false;
@@ -392,7 +425,11 @@ void printSerialSummary() {
   Serial.print(" | Slave 2 ok/fail=");
   Serial.print(modbusSlave2OkCount);
   Serial.print("/");
-  Serial.println(modbusSlave2FailCount);
+  Serial.print(modbusSlave2FailCount);
+  Serial.print(" | Slave 3 ok/fail=");
+  Serial.print(modbusSlave3OkCount);
+  Serial.print("/");
+  Serial.println(modbusSlave3FailCount);
 
   Serial.print("Poll ms min/avg/max=");
   if (pollDurationSampleCount == 0) {
