@@ -1,0 +1,51 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "RS485: Build (esp32-s3-main)",
+      "type": "shell",
+      "command": "platformio",
+      "args": [
+        "run",
+        "-e",
+        "esp32-s3-main"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "RS485: Upload (esp32-s3-main)",
+      "type": "shell",
+      "command": "platformio",
+      "args": [
+        "run",
+        "-e",
+        "esp32-s3-main",
+        "-t",
+        "upload"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "RS485: Monitor (esp32-s3-main)",
+      "type": "shell",
+      "command": "platformio",
+      "args": [
+        "device",
+        "monitor",
+        "-e",
+        "esp32-s3-main"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "RS485: Build + Upload (esp32-s3-main)",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "RS485: Build (esp32-s3-main)",
+        "RS485: Upload (esp32-s3-main)"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
