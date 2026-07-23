@@ -16,6 +16,11 @@ PlatformIO firmware for ESP32-S3 that:
 - Built-in access point + HTTP dashboard
 - ESP-NOW broadcast packet for downstream nodes
 
+## Hardware
+- Slave 1: ME31-XAAX0440
+- Slave 2: ME31-XDXX0800-485
+- Slave 3: ME31-XEXX0800-485
+
 ## Hardware pins
 
 - GPIO 17 -> RS485 TX (DI)
