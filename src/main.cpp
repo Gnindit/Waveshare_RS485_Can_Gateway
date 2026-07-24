@@ -37,7 +37,7 @@ static const char *WIFI_AP_PASSWORD = "";
 // Modbus settings
 // -------------------------------
 static const uint32_t POLL_INTERVAL_MS = 1000;
-static const uint32_t ESP_NOW_SEND_INTERVAL_MS = 500;
+static const uint32_t ESP_NOW_SEND_INTERVAL_MS = 1000;
 static const uint32_t SERIAL_SUMMARY_INTERVAL_MS = 5000;
 static const uint32_t MODBUS_BAUDRATE = 57600;  // Common default: 9600, 19200, 38400
 static const uint8_t MODBUS_READ_RETRIES = 2;
