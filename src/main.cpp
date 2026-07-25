@@ -36,8 +36,8 @@ static const char *WIFI_AP_PASSWORD = "";
 // -------------------------------
 // Modbus settings
 // -------------------------------
-static const uint32_t POLL_INTERVAL_MS = 1000;
-static const uint32_t ESP_NOW_SEND_INTERVAL_MS = 1000;
+static const uint32_t POLL_INTERVAL_MS = 500;
+static const uint32_t ESP_NOW_SEND_INTERVAL_MS = 500;
 static const uint32_t SERIAL_SUMMARY_INTERVAL_MS = 5000;
 static const uint32_t MODBUS_BAUDRATE = 57600;  // Common default: 9600, 19200, 38400
 static const uint8_t MODBUS_READ_RETRIES = 2;
@@ -254,10 +254,11 @@ float convertEngineeringValue(float rawValue, const SensorChannel &channel) {
           (channel.maxMa - channel.minMa));
 }
 
-  // Reads a single Modbus register with retry logic and slave switch handling.
-uint8_t readSingleRegister(uint8_t slaveId, uint16_t registerAddress,
-                           SensorRegisterType registerType,
-                                uint16_t &rawValue) {
+// Reads count consecutive registers starting at startAddress for the given slave, with retry logic.
+// On success, fills rawValues[0..count-1] from the Modbus response buffer.
+uint8_t readBatchRegisters(uint8_t slaveId, uint16_t startAddress,
+                            SensorRegisterType registerType, uint8_t count,
+                            uint16_t *rawValues) {
   if (activeModbusSlave != slaveId) {
     node.begin(slaveId, RS485Serial);
     node.preTransmission(preTransmission);
@@ -270,10 +271,12 @@ uint8_t readSingleRegister(uint8_t slaveId, uint16_t registerAddress,
   for (uint8_t attempt = 0; attempt < MODBUS_READ_RETRIES; ++attempt) {
     node.clearResponseBuffer();
     uint8_t result = registerType == SensorRegisterType::Holding
-                         ? node.readHoldingRegisters(registerAddress, 1)
-                         : node.readInputRegisters(registerAddress, 1);
+                         ? node.readHoldingRegisters(startAddress, count)
+                         : node.readInputRegisters(startAddress, count);
     if (result == node.ku8MBSuccess) {
-      rawValue = node.getResponseBuffer(0);
+      for (uint8_t i = 0; i < count; ++i) {
+        rawValues[i] = node.getResponseBuffer(i);
+      }
       return result;
     }
 
@@ -285,22 +288,11 @@ uint8_t readSingleRegister(uint8_t slaveId, uint16_t registerAddress,
   return lastResult;
 }
 
-// Polls one configured sensor channel and updates its latest reading state.
-void pollModbusChannel(size_t index) {
+// Applies a Modbus batch result to a single channel's reading state.
+// Called once per channel after readBatchRegisters() to distribute results.
+void applyModbusResult(size_t index, uint8_t result, uint16_t rawValue) {
   const SensorChannel &channel = SENSOR_CHANNELS[index];
   SensorReading &reading = lastReadings[index];
-
-  if (!channel.active) {
-    reading.channel = &channel;
-    reading.hasValidReading = false;
-    reading.modbusResult = 0;
-    return;
-  }
-
-  uint16_t rawValue = 0;
-  uint8_t result =
-      readSingleRegister(channel.slaveId, channel.registerAddress,
-                         channel.registerType, rawValue);
   reading.channel = &channel;
   reading.modbusResult = result;
 
@@ -377,10 +369,45 @@ void pollModbusChannel(size_t index) {
   }
 }
 
-// Polls all configured Modbus channels in sequence.
+// Polls all active sensor groups using batched Modbus reads (one transaction per slave).
+// Inactive/reserved channels are marked invalid without hitting the bus.
 void pollModbus() {
+  // Mark all inactive channels so downstream code sees a clean state.
   for (size_t index = 0; index < SENSOR_CHANNEL_COUNT; ++index) {
-    pollModbusChannel(index);
+    if (!SENSOR_CHANNELS[index].active) {
+      lastReadings[index].channel = &SENSOR_CHANNELS[index];
+      lastReadings[index].hasValidReading = false;
+      lastReadings[index].modbusResult = 0;
+    }
+  }
+
+  // Slave 1: input registers 0x0064-0x0065 → channel indices 0-1
+  // (Water pressure, Fuel pressure)
+  if (ENABLE_SLAVE_1) {
+    uint16_t rawValues[2] = {};
+    uint8_t result = readBatchRegisters(1, 0x0064, SensorRegisterType::Input, 2, rawValues);
+    applyModbusResult(0, result, rawValues[0]);
+    applyModbusResult(1, result, rawValues[1]);
+  }
+
+  // Slave 2: input registers 0x0190-0x0193 → channel indices 4-7
+  // (Cylinder left/right temp, Motor ambient, Air ambient)
+  if (ENABLE_SLAVE_2) {
+    uint16_t rawValues[4] = {};
+    uint8_t result = readBatchRegisters(2, 0x0190, SensorRegisterType::Input, 4, rawValues);
+    applyModbusResult(4, result, rawValues[0]);
+    applyModbusResult(5, result, rawValues[1]);
+    applyModbusResult(6, result, rawValues[2]);
+    applyModbusResult(7, result, rawValues[3]);
+  }
+
+  // Slave 3: holding registers 0x0000-0x0001 → channel indices 12-13
+  // (Exhaust gas left/right temp)
+  if (ENABLE_SLAVE_3) {
+    uint16_t rawValues[2] = {};
+    uint8_t result = readBatchRegisters(3, 0x0000, SensorRegisterType::Holding, 2, rawValues);
+    applyModbusResult(12, result, rawValues[0]);
+    applyModbusResult(13, result, rawValues[1]);
   }
 }
 
@@ -431,17 +458,25 @@ void printSerialSummary() {
   Serial.print("/");
   Serial.println(modbusSlave3FailCount);
 
-  Serial.print("Poll ms min/avg/max=");
+  // Show configured interval so it's visible when tuning.
+  Serial.print("Poll interval=");
+  Serial.print(POLL_INTERVAL_MS);
+  Serial.print("ms | Modbus read ms min/avg/max=");
   if (pollDurationSampleCount == 0) {
-    Serial.print("-");
+    Serial.print("-/-/-");
   } else {
+    const uint32_t avgMs = pollDurationTotalMs / pollDurationSampleCount;
     Serial.print(pollDurationMinMs);
     Serial.print("/");
-    Serial.print(pollDurationTotalMs / pollDurationSampleCount);
+    Serial.print(avgMs);
     Serial.print("/");
     Serial.print(pollDurationMaxMs);
+    // Utilization: what fraction of the poll interval the Modbus reads consume.
+    Serial.print(" (");
+    Serial.print((avgMs * 100) / POLL_INTERVAL_MS);
+    Serial.print("% of interval)");
   }
-  Serial.print(" cycles=");
+  Serial.print(" | cycles=");
   Serial.print(pollCycleCount);
   Serial.print(" overruns=");
   Serial.println(pollOverrunCount);
