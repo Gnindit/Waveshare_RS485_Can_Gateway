@@ -176,22 +176,35 @@ void preTransmission();
 void postTransmission();
 
 // Tracks ESP-NOW send statistics and periodically logs transmission health.
-void onEspNowSent(const esp_now_send_info_t *txInfo, esp_now_send_status_t status) {
-  (void)txInfo;
+void onEspNowSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+
+  (void)mac_addr;
+
   ++espNowSendCount;
+
   if (status != ESP_NOW_SEND_SUCCESS) {
+
     ++espNowSendFailCount;
+
   }
 
   if (isSerialHostConnected(64) &&
       ((espNowSendCount % 10) == 0 || status != ESP_NOW_SEND_SUCCESS)) {
+
     Serial.print("ESP-NOW tx count=");
+
     Serial.print(espNowSendCount);
+
     Serial.print(" fail=");
+
     Serial.print(espNowSendFailCount);
+
     Serial.print(" lastStatus=");
+
     Serial.println(status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+
   }
+
 }
 
 // Initializes ESP-NOW in AP mode and registers the broadcast peer.
