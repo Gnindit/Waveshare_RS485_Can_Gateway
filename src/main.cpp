@@ -538,17 +538,25 @@ void broadcastSensorSnapshot() {
   EspNowBroadcastPacket packet = {};
   packet.magic = ESP_NOW_MAGIC;
   packet.version = ESP_NOW_VERSION;
-  packet.sensorCount = SENSOR_CHANNEL_COUNT > ESP_NOW_MAX_BROADCAST_SENSORS
-                          ? ESP_NOW_MAX_BROADCAST_SENSORS
-                          : SENSOR_CHANNEL_COUNT;
   packet.uptimeMs = millis();
 
-  for (size_t index = 0; index < packet.sensorCount; ++index) {
+  // Receivers index this array by each channel's fixed position in SENSOR_CHANNELS
+  // (e.g. cylinder-right temp is always slot 5), so slots must not be compacted.
+  // ESP-NOW caps payloads at 250 bytes, so only the slots up to the highest
+  // active channel are sent instead of the full fixed-size struct.
+  size_t highestActiveIndex = 0;
+  bool anyActive = false;
+  for (size_t index = 0; index < SENSOR_CHANNEL_COUNT && index < ESP_NOW_MAX_BROADCAST_SENSORS;
+       ++index) {
     const SensorChannel &channel = SENSOR_CHANNELS[index];
+    if (!channel.active) {
+      continue;
+    }
+
     const SensorReading &reading = lastReadings[index];
     EspNowSensorSnapshot &snapshot = packet.sensors[index];
 
-    snapshot.active = channel.active ? 1 : 0;
+    snapshot.active = 1;
     snapshot.valid = (reading.hasValidReading && reading.modbusResult == node.ku8MBSuccess) ? 1 : 0;
     snapshot.hasCurrentMa = reading.hasCurrentMa ? 1 : 0;
     snapshot.valueMode = static_cast<uint8_t>(channel.valueMode);
@@ -556,11 +564,18 @@ void broadcastSensorSnapshot() {
     snapshot.registerAddress = channel.registerAddress;
     snapshot.rawValue = reading.rawValue;
     snapshot.engineeringValue = reading.engineeringValue;
-  }
 
+    highestActiveIndex = index;
+    anyActive = true;
+  }
+  packet.sensorCount = anyActive ? static_cast<uint8_t>(highestActiveIndex + 1) : 0;
+
+  // Only transmit the header plus the slots up to the highest active index, not the full fixed-size struct.
+  const size_t packetSize = offsetof(EspNowBroadcastPacket, sensors) +
+                            packet.sensorCount * sizeof(EspNowSensorSnapshot);
   esp_err_t status = esp_now_send(ESP_NOW_BROADCAST_MAC,
                                   reinterpret_cast<const uint8_t *>(&packet),
-                                  sizeof(packet));
+                                  packetSize);
   if (status != ESP_OK && isSerialHostConnected(48)) {
     Serial.print("ESP-NOW send failed: ");
     Serial.println(static_cast<int>(status));
