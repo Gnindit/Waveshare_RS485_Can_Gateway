@@ -18,3 +18,20 @@
 # Desktop metadata
 .DS_Store
 Thumbs.db
+
+# Firmware artifacts, local release staging, signing credentials and caches
+/release/
+/dist/
+*.bin
+*.elf
+*.map
+*.sha256
+/.secrets/
+*.private.pem
+*.key
+/include/ota_secrets.h
+/ota_secrets.local.json
+*.log
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -39,8 +39,6 @@ struct SensorReading {
   bool hasCurrentMa;
 };
 
-void startSensorAccessPoint(Print &debugSerial, const char *ssid,
-                            const char *password);
 void setupSensorWebServer(const SensorReading *readings,
                           const SensorChannel *channels, size_t channelCount);
 void handleSensorWebClient();

@@ -5,6 +5,9 @@
 #include <WiFi.h>
 
 #include "sensor_server.h"
+#include "firmware_config.h"
+#include "network_manager.h"
+#include "ota_manager.h"
 
 // Code working on Waveshare ESP32-S3 RS485 CAN.
 // Code for ESP32-S3 Modbus RTU (RS485) example that reads sensor registers
@@ -30,8 +33,7 @@
 // -------------------------------
 // Wifi AP settings
 // -------------------------------
-static const char *WIFI_AP_SSID = "ESP32-S3-RS485";
-static const char *WIFI_AP_PASSWORD = "";
+// AP/STA credentials are managed by network_manager and ignored wifi_secrets.h.
 
 // -------------------------------
 // Modbus settings
@@ -44,7 +46,7 @@ static const uint8_t MODBUS_READ_RETRIES = 2;
 static const uint16_t MODBUS_RETRY_DELAY_MS = 20;
 static const uint16_t MODBUS_SLAVE_SWITCH_SETTLE_MS = 3;
 static const uint8_t ESP_NOW_BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-static const uint8_t WIFI_AP_CHANNEL = 1;
+static const uint8_t WIFI_AP_CHANNEL = FirmwareConfig::wifiChannel;
 // Keep this above the configured channel count so ESP-NOW includes all active channels.
 static const uint8_t ESP_NOW_MAX_BROADCAST_SENSORS = 24;
 static const bool ENABLE_SLAVE_1 = true;
@@ -211,7 +213,7 @@ void onEspNowSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 void setupEspNow() {
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
-  esp_wifi_set_channel(WIFI_AP_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  // Network manager owns the channel; never force a channel while STA is connected.
 
   if (esp_now_init() != ESP_OK) {
     if (isSerialHostConnected(32)) {
@@ -449,6 +451,7 @@ void printSerialSummary() {
   Serial.print(validCount);
   Serial.print("/");
   Serial.print(activeCount);
+  Serial.printf(" wifi_channel=%u", actualWifiChannel());
   Serial.print(" espnow_fail=");
   Serial.print(espNowSendFailCount);
   Serial.print(" modbus_ok=");
@@ -534,6 +537,10 @@ void broadcastSensorSnapshot() {
   if (!espNowReady) {
     return;
   }
+  if (actualWifiChannel() != WIFI_AP_CHANNEL) {
+    if (isSerialHostConnected(64)) Serial.printf("ESP-NOW channel conflict: actual=%u expected=%u\n", actualWifiChannel(), WIFI_AP_CHANNEL);
+    return;
+  }
 
   EspNowBroadcastPacket packet = {};
   packet.magic = ESP_NOW_MAGIC;
@@ -578,7 +585,8 @@ void broadcastSensorSnapshot() {
                                   packetSize);
   if (status != ESP_OK && isSerialHostConnected(48)) {
     Serial.print("ESP-NOW send failed: ");
-    Serial.println(static_cast<int>(status));
+    Serial.print(static_cast<int>(status));
+    Serial.printf(" channel=%u\n", actualWifiChannel());
   }
 }
 
@@ -620,7 +628,8 @@ void setup() {
   node.postTransmission(postTransmission);
   activeModbusSlave = SENSOR_CHANNELS[0].slaveId;
 
-  startSensorAccessPoint(Serial, WIFI_AP_SSID, WIFI_AP_PASSWORD);
+  setupNetwork();
+  setupOta();
   setupEspNow();
   setupSensorWebServer(lastReadings, SENSOR_CHANNELS, SENSOR_CHANNEL_COUNT);
 
@@ -631,7 +640,10 @@ void setup() {
 
 // Serves web requests continuously and runs periodic sensor polling/broadcast.
 void loop() {
+  handleNetwork();
   handleSensorWebClient();
+  handleOtaSelfTest(espNowReady && networkAccessPointReady() &&
+                    pollCycleCount >= 1 && ESP.getFreeHeap() > 30000);
 
   if (millis() - lastPollMs >= POLL_INTERVAL_MS) {
     lastPollMs = millis();
