@@ -3,3 +3,18 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch/
+
+# Local VS Code preferences
+.vscode/settings.json
+
+# Local credentials (keep example files shareable)
+.env
+.env.*
+!.env.example
+!.env.*.example
+/include/wifi_secrets.h
+/ota_secrets.json
+
+# Desktop metadata
+.DS_Store
+Thumbs.db
