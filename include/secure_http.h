@@ -23,4 +23,6 @@ class SecureHttp {
   String location;
   String encoding;
   int64_t responseLength = -1;
+  int lastTlsError = 0;
+  int lastCertFlags = 0;
 };

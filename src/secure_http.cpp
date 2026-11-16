@@ -2,6 +2,7 @@
 #include "firmware_config.h"
 #include "ota_policy.h"
 #include <time.h>
+#include <esp_tls.h>
 
 // Arduino ships a different esp_crt_bundle.h with the same include name.
 // Use the ESP-IDF API and its built-in full Mozilla CA bundle, not the Arduino shim.
@@ -22,6 +23,9 @@ esp_err_t SecureHttp::onEvent(esp_http_client_event_t *event) {
   if (event->event_id == HTTP_EVENT_ON_HEADER) {
     if (!strcasecmp(event->header_key, "Location")) self->location = event->header_value;
     if (!strcasecmp(event->header_key, "Content-Encoding")) self->encoding = event->header_value;
+  } else if (event->event_id == HTTP_EVENT_ERROR && event->data) {
+    esp_tls_get_and_clear_last_error(static_cast<esp_tls_error_handle_t>(event->data),
+                                    &self->lastTlsError, &self->lastCertFlags);
   }
   return ESP_OK;
 }
@@ -33,6 +37,8 @@ bool SecureHttp::open(const String &initialUrl, String &error, bool requireKnown
     if (!hasValidClock()) { error = "Clock not synchronized; TLS requires valid time"; return false; }
     location = "";
     encoding = "";
+    lastTlsError = 0;
+    lastCertFlags = 0;
     esp_http_client_config_t config = {};
     config.url = url.c_str();
     config.timeout_ms = 5000;
@@ -41,12 +47,22 @@ bool SecureHttp::open(const String &initialUrl, String &error, bool requireKnown
     config.event_handler = onEvent;
     config.user_data = this;
     config.buffer_size = 2048;
+    config.buffer_size_tx = OtaPolicy::requestBufferSize(url.length());
     config.user_agent = "Waveshare-RS485/" FIRMWARE_VERSION;
     client = esp_http_client_init(&config);
     if (!client) { error = "Cannot allocate HTTPS client"; return false; }
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
     const esp_err_t result = esp_http_client_open(client, 0);
-    if (result != ESP_OK) { error = "HTTPS connection failed (network, DNS or certificate)"; return false; }
+    if (result != ESP_OK) {
+      const int slash = url.indexOf('/', 8);
+      const String host = url.substring(8, slash < 0 ? url.length() : slash);
+      char details[96];
+      snprintf(details, sizeof(details), " (%s; TLS=0x%x; cert=0x%x)",
+               esp_err_to_name(result), static_cast<unsigned>(lastTlsError), static_cast<unsigned>(lastCertFlags));
+      // Log the hostname only, never the signed redirect URL/query.
+      error = "HTTPS request failed at " + host + details;
+      return false;
+    }
     responseLength = esp_http_client_fetch_headers(client);
     const int status = esp_http_client_get_status_code(client);
     if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {

@@ -275,6 +275,13 @@ instead of `latest`. Neither the script nor firmware creates a GitHub Release.
    continues refreshing once per second while the device is available. After reboot,
    check the new version and wait for the boot self-test to pass.
 
+Internet status checks only `https://github.com/robots.txt`, not every release asset
+or redirect host. `online` therefore does not guarantee OTA connectivity. Firmware
+1.1.1 sizes the HTTP transmit buffer for GitHub's long signed asset URLs (the IDF
+4.4 default of 512 bytes is too short). Connection/request errors now identify the
+failing hostname, ESP error code and TLS/certificate flags without logging signed
+query strings. Certificate and signature checks remain enforced.
+
 The existing `WebServer server(80)` and `/api/sensors` are retained. New endpoints:
 
 | Endpoint | Access | Purpose |

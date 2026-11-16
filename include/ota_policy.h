@@ -4,6 +4,12 @@
 #include <string>
 
 namespace OtaPolicy {
+inline size_t requestBufferSize(size_t urlLength) {
+  // ESP-IDF 4.4 must fit the complete HTTP request line in its TX buffer.
+  // GitHub release redirects include long signed query strings.
+  return urlLength + 256 < 1024 ? 1024 : urlLength + 256;
+}
+
 inline bool trustedHost(const std::string &host, const std::string &apIp,
                         const std::string &staIp, bool connected) {
   return host == apIp || host == apIp + ":80" ||

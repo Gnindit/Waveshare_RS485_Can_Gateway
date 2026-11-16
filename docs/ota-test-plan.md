@@ -58,3 +58,18 @@ No physical uploads are performed by the development or release scripts.
 USB remains the recovery route. For public application OTA use `.pio/build/esp32-s3-release/firmware.bin`, as packaged
 by the release script. Do not publish a USB/main binary containing local secrets. Neither release preparation nor pull OTA touches the FAT partition,
 partition table, bootloader or existing sensor data.
+
+## USB monitor / standalone regression
+
+Keep the USB cable and power connected. Open the monitor, verify polling, then close
+only the monitor while loading the dashboard on the phone. Modbus LEDs, changing
+sensor values and receiver packet delivery must continue. Repeat several times,
+including while a serial summary is being printed, and reopen the monitor to inspect
+counters. Repeat with the board powered without a computer. A WiFi association alone
+does not demonstrate a working main loop. This physical test has not been performed
+by the build/host tests.
+
+Firmware 1.1.2 uses a positive 1 ms USB TX timeout to avoid the Arduino 2.0.17 HWCDC
+unsigned retry-counter wraparound at zero. ESP-NOW callbacks only update atomic
+statistics; their serial output is deferred to the main loop. Logs can be dropped
+under USB backpressure, and are not allowed to control sensor polling or delivery.

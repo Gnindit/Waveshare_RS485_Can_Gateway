@@ -3,6 +3,11 @@
 #include <iostream>
 
 int main() {
+  // Observed GitHub redirect: 917-byte URL, 888-byte request line.
+  // The IDF default 512-byte TX buffer cannot send it.
+  assert(OtaPolicy::requestBufferSize(917) > 888);
+  assert(OtaPolicy::requestBufferSize(80) >= 512);
+  assert(OtaPolicy::requestBufferSize(4096) > 4096 + 16);
   assert(OtaPolicy::trustedHost("192.168.4.1", "192.168.4.1", "192.168.1.22", true));
   assert(OtaPolicy::trustedHost("192.168.1.22:80", "192.168.4.1", "192.168.1.22", true));
   assert(!OtaPolicy::trustedHost("192.168.1.22", "192.168.4.1", "192.168.1.22", false));

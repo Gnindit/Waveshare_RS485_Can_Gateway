@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <atomic>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <ModbusMaster.h>
@@ -143,8 +144,9 @@ unsigned long lastPollMs = 0;
 unsigned long lastEspNowSendMs = 0;
 bool espNowReady = false;
 uint8_t activeModbusSlave = 0xFF;
-uint32_t espNowSendCount = 0;
-uint32_t espNowSendFailCount = 0;
+std::atomic<uint32_t> espNowSendCount{0};
+std::atomic<uint32_t> espNowSendFailCount{0};
+std::atomic<bool> espNowLastSendOk{true};
 uint32_t modbusReadOkCount = 0;
 uint32_t modbusReadFailCount = 0;
 uint32_t modbusReadFailSinceSummary = 0;
@@ -177,36 +179,27 @@ void preTransmission();
 // Called right after a Modbus frame is transmitted.
 void postTransmission();
 
-// Tracks ESP-NOW send statistics and periodically logs transmission health.
+// The high-priority Wi-Fi callback must never perform USB I/O or wait on its locks.
 void onEspNowSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-
   (void)mac_addr;
+  const bool succeeded = status == ESP_NOW_SEND_SUCCESS;
+  espNowSendCount.fetch_add(1, std::memory_order_relaxed);
+  if (!succeeded) espNowSendFailCount.fetch_add(1, std::memory_order_relaxed);
+  espNowLastSendOk.store(succeeded, std::memory_order_relaxed);
+}
 
-  ++espNowSendCount;
-
-  if (status != ESP_NOW_SEND_SUCCESS) {
-
-    ++espNowSendFailCount;
-
-  }
-
-  if (isSerialHostConnected(64) &&
-      ((espNowSendCount % 10) == 0 || status != ESP_NOW_SEND_SUCCESS)) {
-
-    Serial.print("ESP-NOW tx count=");
-
-    Serial.print(espNowSendCount);
-
-    Serial.print(" fail=");
-
-    Serial.print(espNowSendFailCount);
-
-    Serial.print(" lastStatus=");
-
-    Serial.println(status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
-
-  }
-
+// Log from the main loop, in one short write, only when there is buffer space.
+void printEspNowStatus() {
+  static uint32_t lastLoggedCount = 0;
+  static uint32_t lastLoggedFailures = 0;
+  const uint32_t count = espNowSendCount.load(std::memory_order_relaxed);
+  const uint32_t failures = espNowSendFailCount.load(std::memory_order_relaxed);
+  if ((count - lastLoggedCount < 10 && failures == lastLoggedFailures) || !isSerialHostConnected(96)) return;
+  lastLoggedCount = count;
+  lastLoggedFailures = failures;
+  Serial.printf("ESP-NOW tx count=%lu fail=%lu lastStatus=%s\n",
+                static_cast<unsigned long>(count), static_cast<unsigned long>(failures),
+                espNowLastSendOk.load(std::memory_order_relaxed) ? "OK" : "FAIL");
 }
 
 // Initializes ESP-NOW in AP mode and registers the broadcast peer.
@@ -453,7 +446,7 @@ void printSerialSummary() {
   Serial.print(activeCount);
   Serial.printf(" wifi_channel=%u", actualWifiChannel());
   Serial.print(" espnow_fail=");
-  Serial.print(espNowSendFailCount);
+  Serial.print(espNowSendFailCount.load(std::memory_order_relaxed));
   Serial.print(" modbus_ok=");
   Serial.print(modbusReadOkCount);
   Serial.print(" modbus_fail=");
@@ -603,7 +596,10 @@ void postTransmission() {
 // Performs one-time hardware, Modbus, Wi-Fi AP, web server, and ESP-NOW setup.
 void setup() {
   Serial.begin(115200);
-  Serial.setTxTimeoutMs(0);
+  // Arduino 2.0.17 HWCDC decrements an unsigned retry counter before checking zero.
+  // Zero can wrap to UINT32_MAX when the host stops draining USB. Use a short,
+  // positive timeout, even for writes that passed the availableForWrite check.
+  Serial.setTxTimeoutMs(1);
   delay(1000);
 
   if (isSerialHostConnected(32)) {
@@ -668,6 +664,8 @@ void loop() {
     lastEspNowSendMs = millis();
     broadcastSensorSnapshot();
   }
+
+  printEspNowStatus();
 
   if (millis() - lastSerialSummaryMs >= SERIAL_SUMMARY_INTERVAL_MS) {
     lastSerialSummaryMs = millis();
