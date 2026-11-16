@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-#define FIRMWARE_VERSION "1.1.2"
+#define FIRMWARE_VERSION "1.1.3"
 
 namespace FirmwareConfig {
 constexpr const char *version = FIRMWARE_VERSION;

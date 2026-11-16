@@ -73,3 +73,20 @@ Firmware 1.1.2 uses a positive 1 ms USB TX timeout to avoid the Arduino 2.0.17 H
 unsigned retry-counter wraparound at zero. ESP-NOW callbacks only update atomic
 statistics; their serial output is deferred to the main loop. Logs can be dropped
 under USB backpressure, and are not allowed to control sensor polling or delivery.
+
+## Login latency regression (1.1.3)
+
+Measure sign-in time on both AP IP and STA IP, with serial monitor open and closed.
+Try initial login, cached credentials, cancel/back, browser back/forward and repeated
+sign-in clicks. The sensor panel must resume polling after returning to it. Test with
+slow/unavailable HTTP responses: requests must not accumulate, and login navigation
+must cancel background polls. Host tests exercise the dashboard JavaScript polling
+and cancellation logic with delayed mocked responses; native Digest/browser timing
+still needs the physical phone test.
+
+`/api/system` now reports `webLastHandleMs` and `webMaxHandleMs`. Slow WebServer calls
+(250 ms or longer) are logged as `Web handling slow: ...`. These measure time spent
+inside handleClient, not time queued in the phone/browser or between network requests.
+Compare these measurements with the observed sign-in delay before assigning a cause.
+The firmware-size lookup performs full image verification in Arduino 2.0.17 and is
+now done once at boot instead of on each system-status request.

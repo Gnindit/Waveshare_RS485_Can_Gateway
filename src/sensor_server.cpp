@@ -17,6 +17,9 @@ const SensorReading *activeReadings = nullptr;
 const SensorChannel *activeChannels = nullptr;
 size_t activeChannelCount = 0;
 String csrfToken;
+uint32_t runningFirmwareSize = 0;
+uint32_t webLastHandleMs = 0;
+uint32_t webMaxHandleMs = 0;
 
 void securityHeaders() {
   server.sendHeader("Cache-Control", "no-store");
@@ -48,7 +51,9 @@ void handleSystem() {
       ",\"deviceId\":" + jsonQuote(FirmwareConfig::deviceId) +
       ",\"defaultFirmwareUrl\":" + jsonQuote(FirmwareConfig::defaultFirmwareUrl) +
       ",\"uptimeMs\":" + String(millis()) + ",\"freeHeap\":" + String(ESP.getFreeHeap()) +
-      ",\"firmwareSize\":" + String(ESP.getSketchSize()) +
+      ",\"firmwareSize\":" + String(runningFirmwareSize) +
+      ",\"webLastHandleMs\":" + String(webLastHandleMs) +
+      ",\"webMaxHandleMs\":" + String(webMaxHandleMs) +
       ",\"network\":" + networkStatusJson() + ",\"ota\":" + otaSystemJson() + "}";
   server.send(200, "application/json", json);
 }
@@ -168,6 +173,9 @@ void setupSensorWebServer(const SensorReading *readings,
   activeReadings = readings;
   activeChannels = channels;
   activeChannelCount = channelCount;
+  // Arduino getSketchSize() verifies the whole flash image. Do it once at boot,
+  // not on every /api/system request in the sensor/web loop.
+  runningFirmwareSize = ESP.getSketchSize();
 
   char token[33];
   snprintf(token, sizeof(token), "%08lx%08lx%08lx%08lx", (unsigned long)esp_random(),
@@ -189,5 +197,12 @@ void setupSensorWebServer(const SensorReading *readings,
 }
 
 void handleSensorWebClient() {
+  const uint32_t started = millis();
   server.handleClient();
+  webLastHandleMs = millis() - started;
+  if (webLastHandleMs > webMaxHandleMs) webMaxHandleMs = webLastHandleMs;
+  if (webLastHandleMs >= 250 && Serial && Serial.availableForWrite() >= 96) {
+    Serial.printf("Web handling slow: %lu ms (max %lu ms)\n",
+                  static_cast<unsigned long>(webLastHandleMs), static_cast<unsigned long>(webMaxHandleMs));
+  }
 }

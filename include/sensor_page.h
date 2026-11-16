@@ -160,8 +160,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
     async function refreshSensors() {
+      if (pageLeaving || sensorsLoading) return;
+      sensorsLoading = true;
       try {
-        const response = await fetch('/api/sensors', { cache: 'no-store' });
+        const response = await fetchWithTimeout('/api/sensors');
         const data = await response.json();
         document.getElementById('sensors').innerHTML = data.sensors.map(sensorCard).join('');
 
@@ -171,11 +173,17 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         status.className = activeSensors.every(sensor => sensor.valid) ? 'status' : 'status error';
       } catch (error) {
         const status = document.getElementById('status');
-        status.textContent = 'Web update failed. Retrying...';
-        status.className = 'status error';
-      }
+        if (!pageLeaving) {
+          status.textContent = 'Web update failed. Retrying...';
+          status.className = 'status error';
+        }
+      } finally { sensorsLoading = false; }
     }
 
+    let pageLeaving = false;
+    let sensorsLoading = false;
+    const dashboardTimers = [];
+    const pendingRequests = new Set();
     let csrfToken = '';
     let otaActive = false;
     let systemReady = false;
@@ -191,12 +199,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     async function fetchWithTimeout(url, options = {}) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
+      pendingRequests.add(controller);
       try { return await fetch(url, { ...options, signal: controller.signal, cache: 'no-store', credentials: 'same-origin' }); }
-      finally { clearTimeout(timer); }
+      finally { clearTimeout(timer); pendingRequests.delete(controller); }
     }
 
     async function refreshSystem() {
-      if (systemLoading) return;
+      if (pageLeaving || systemLoading) return;
       systemLoading = true;
       try {
         const response = await fetchWithTimeout('/api/system');
@@ -223,7 +232,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
     async function refreshOta() {
-      if (otaLoading) return;
+      if (pageLeaving || otaLoading) return;
       otaLoading = true;
       try {
         const response = await fetchWithTimeout('/api/ota/status');
@@ -270,12 +279,27 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       }
     });
 
-    refreshSensors();
-    refreshSystem();
-    if (new URLSearchParams(window.location.search).get('ota') === 'unlocked') refreshOta();
-    setInterval(refreshSensors, 1000);
-    setInterval(refreshSystem, 5000);
-    setInterval(() => { if (csrfToken) refreshOta(); }, 1000);
+    function stopDashboardPolling() {
+      pageLeaving = true;
+      dashboardTimers.splice(0).forEach(clearInterval);
+      pendingRequests.forEach(controller => controller.abort());
+    }
+
+    function startDashboardPolling() {
+      if (dashboardTimers.length) return;
+      pageLeaving = false;
+      refreshSensors();
+      refreshSystem();
+      if (new URLSearchParams(window.location.search).get('ota') === 'unlocked') refreshOta();
+      dashboardTimers.push(setInterval(refreshSensors, 1000));
+      dashboardTimers.push(setInterval(refreshSystem, 5000));
+      dashboardTimers.push(setInterval(() => { if (csrfToken) refreshOta(); }, 1000));
+    }
+
+    document.getElementById('otaLogin').addEventListener('click', stopDashboardPolling);
+    window.addEventListener('pagehide', stopDashboardPolling);
+    window.addEventListener('pageshow', startDashboardPolling);
+    startDashboardPolling();
   </script>
 </body>
 </html>
