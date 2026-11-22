@@ -142,6 +142,8 @@ and register type for batching to work.
 ## Router and optional debugging AP
 
 The pinned build uses PlatformIO Espressif32 7.0.1 / Arduino-ESP32 2.0.17 (IDF 4.4.7).
+The N16R8 board definition is versioned in `boards/`, so clean checkouts and GitHub
+runners use the same flash/PSRAM configuration as the development computer.
 `include/firmware_config.h` contains the firmware version and this compile-time switch:
 
 ```cpp
