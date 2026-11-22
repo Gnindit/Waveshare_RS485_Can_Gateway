@@ -3,7 +3,7 @@
 PlatformIO firmware for ESP32-S3 that:
 
 - polls Modbus RTU sensors over RS485
-- serves a live sensor web page over WPA2 Wi-Fi AP and router STA
+- serves a live sensor web page through the router, with an optional debugging AP
 - exposes JSON at `/api/sensors`
 - broadcasts sensor snapshots over ESP-NOW
 
@@ -14,7 +14,7 @@ PlatformIO firmware for ESP32-S3 that:
 - Multi-slave channel table with per-channel scaling
 - Current-loop conversion (4-20 mA -> engineering units)
 - Direct scaled values (`engineering = raw * scale`)
-- WPA2 AP + STA on fixed channel 1, HTTP dashboard, authenticated signed HTTPS pull OTA
+- Router STA on fixed channel 1, optional WPA2 AP, HTTP dashboard, HTTPS pull OTA without login
 - ESP-NOW broadcast packet for downstream nodes
 - Serial summary with poll timing and utilization % for easy interval tuning
 
@@ -84,9 +84,9 @@ Inactive/reserved channels are kept in the table as placeholders for future use.
 
 ## Web interface
 
-- AP SSID: `ESP32-S3-RS485`
-- Open browser to the AP IP shown in serial log (typically `http://192.168.4.1`)
-- Live JSON endpoint: `http://192.168.4.1/api/sensors`
+- Connect to the RUT240 and open the gateway STA IP shown in serial or the router DHCP client list.
+- Live JSON endpoint: `http://<gateway-ip>/api/sensors`.
+- The debugging AP is off by default; enable it with `FirmwareConfig::apEnabled` in `include/firmware_config.h`. Its SSID is `ESP32-S3-RS485` and its usual IP is `192.168.4.1`.
 
 Each sensor object includes:
 
@@ -139,58 +139,66 @@ previously reserved registers, extend the batch count and add the corresponding
 and register type for batching to work.
 
 
-## AP + STA configuration (firmware 1.1.0)
+## Router and optional debugging AP
 
-The tested build uses PlatformIO Espressif32 7.0.1 / Arduino-ESP32 2.0.17 (IDF 4.4.7).
-Set `include/firmware_config.h` to change the central firmware version.
+The pinned build uses PlatformIO Espressif32 7.0.1 / Arduino-ESP32 2.0.17 (IDF 4.4.7).
+`include/firmware_config.h` contains the firmware version and this compile-time switch:
 
-Copy the versioned `include/wifi_secrets.example.h` to `include/wifi_secrets.h` and
-set `staSsid` and `staPassword` to the boat's 2.4 GHz router. The local header is
-ignored by Git. Optionally set `apPassword` (8–63 characters) and `otaPassword`
-(at least 16 characters); the OTA user defaults to `admin`. Do not put actual
-credentials in the example header or commit them.
+```cpp
+constexpr bool apEnabled = false;
+```
 
-The USB/main build provisions these settings in NVS. Later OTA builds reuse NVS settings.
-Without that local header or stored settings, STA is unconfigured but the AP still works. Empty AP
-and OTA passwords generate independent random device passwords, saved in the
-`gateway-net` NVS namespace and printed over USB serial at boot. Configured AP/OTA credentials are also printed;
-keep serial output private. Open the 115200
-monitor **before resetting** to read them. The AP never intentionally starts open.
-NVS write/configuration errors disable network startup rather than use an open AP.
-Keep these serial logs private. Explicit passwords in the ignored header override
-stored passwords during a USB/main build. An empty STA SSID retains the stored network;
-use a USB provisioning build with a new SSID/password to change networks. An NVS erase would remove generated passwords.
+With `false`, the gateway starts only STA, and the webpage/OTA is reached through the
+RUT240. Set it to `true` and rebuild to enable the WPA2 debugging AP alongside STA.
+There is no automatic AP fallback when the router is unavailable. Modbus and ESP-NOW
+continue without the router; webpage access then requires restoring the router or a
+USB build with the AP enabled. Boot self-test does not require router connectivity.
 
-AP and STA share one web server on port 80. Use the AP IP (normally
-`http://192.168.4.1`) or the STA IP shown in serial / WiFi & System. OTA uses
-**literal device IP addresses**, not a custom hostname, for Host/Origin validation.
-Sensor readings continue without STA or internet. Reconnection is asynchronous:
-scan channel 1 every 30 seconds, associate with the discovered BSSID, and abandon
-an unsuccessful association after 12 seconds. WiFi sleep and automatic roaming
-are disabled. A separate worker checks verified HTTPS reachability to GitHub once
-per minute; this status is an observation, not a guarantee that every URL works.
-SNTP time is required for certificate verification. Blocked DNS/NTP or a captive
-portal can prevent OTA even when STA is connected.
+Copy `include/wifi_secrets.example.h` to the ignored `include/wifi_secrets.h` and
+configure `staSsid` and `staPassword`. The USB/main build provisions them in NVS;
+public OTA builds reuse NVS and exclude local credentials. An empty STA SSID keeps
+the saved network. To change networks, provision a new SSID/password with a USB/main
+build. Keep credentials and serial logs private.
+
+If the debugging AP is enabled, `apPassword` must contain 8–63 characters, or an empty
+value generates a random password saved in NVS and printed over USB serial at boot.
+The AP remains password protected. Old OTA username/password settings in local headers
+or NVS are no longer used and may be removed from the header. No NVS erase is needed.
+
+USB device paths belong in the ignored `platformio.local.ini`, which is loaded using
+PlatformIO's [extra_configs](https://docs.platformio.org/en/stable/projectconf/sections/platformio/options/generic/extra_configs.html).
+Copy `platformio.local.ini.example` for another machine, or let PlatformIO detect the
+port. The committed configuration has no COM-port or machine-specific USB identifier.
+Wi-Fi credentials remain in `include/wifi_secrets.h`, separate from port settings.
+
+Use literal device IP addresses for Host/Origin validation. Reconnection scans only
+channel 1 every 30 seconds and abandons an unsuccessful association after 12 seconds.
+WiFi sleep and automatic roaming are disabled. A worker checks verified HTTPS access
+to GitHub once per minute. SNTP time is required for TLS certificate verification;
+blocked DNS/NTP or a captive portal can prevent OTA despite a connected STA.
 
 ### ESP-NOW channel requirement
 
-**Lock the router to channel 1; turn off automatic channel selection.** AP, STA and
-ESP-NOW share a single radio. Existing receivers must also remain on channel 1.
+**Lock the router to channel 1; turn off automatic channel selection.** STA,
+ESP-NOW and the optional AP share one radio. Existing receivers must also remain
+on channel 1.
 The channel-specific asynchronous discovery scan avoids sweeping other channels.
 STA is only started for a matching SSID/BSSID discovered on channel 1. If the radio
 moves to a different channel, firmware logs the conflict, disconnects STA and
-restores channel 1. It prioritizes AP/ESP-NOW over connectivity to an incompatible
+restores channel 1. It prioritizes ESP-NOW over connectivity to an incompatible
 router. Do not point this device at a mesh that moves its channel automatically.
 Association/channel recovery can still cause brief interruptions; verify actual
 receiver delivery on the hardware, especially during reconnects and downloads.
 
-The ESP-NOW wire format, magic, version, fixed sensor indices, AP interface,
-broadcast address and 500 ms send interval are unchanged. Sender logs include
-actual WiFi channel and failures. A broadcast success does not acknowledge delivery
+The ESP-NOW wire format, magic, version, fixed sensor indices, broadcast address
+and 500 ms send interval are unchanged. ESP-NOW uses the STA interface with the AP
+disabled, or the AP interface with it enabled. The sender MAC therefore changes
+between modes; any receiver filtering by source MAC must allow the selected
+interface. Sender logs include actual WiFi channel and failures. A broadcast success does not acknowledge delivery
 to every receiver. See [Espressif's channel/interface documentation](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32s3/api-reference/network/esp_now.html)
 and [shared-radio behavior](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32s3/api-guides/wifi.html).
 
-## Signed HTTPS pull OTA
+## HTTPS pull OTA without login
 
 Default firmware URL:
 
@@ -198,111 +206,85 @@ Default firmware URL:
 https://github.com/Gnindit/Waveshare_RS485_Can_Gateway/releases/latest/download/firmware.bin
 ```
 
-The device downloads three adjacent assets: `firmware.manifest`,
-`firmware.manifest.sig` and `firmware.bin`. `firmware.sha256` is also published for
-operator verification. The manifest contains the device ID, version, image size,
-filename and SHA-256. Its detached signature is DER ECDSA P-256 / SHA-256, checked
-against the public key embedded in `include/ota_public_key.h`. Only after signature
-verification does firmware accept the signed size/target/hash. The streamed image
-must also be an ESP32-S3 application and pass ESP-IDF image validation. An unsigned
-checksum alone is not an authorization mechanism.
+Connect to the RUT240, open the gateway STA IP, leave the default firmware URL,
+check the confirmation box and press **Update Firmware**. Confirm the restart and
+watch progress. The webpage reconnects after reboot. No developer login or firmware
+signing key is needed from version 1.2.0 onward.
 
-The private signing key created for this checkout is
-`.secrets/firmware-signing-key.pem` (mode 0600, ignored by Git). **Back it up securely.**
-The public header is safe and necessary to version-control. Other developers should
-receive the public header, not a private key. On a new project without an existing
-trust anchor, initialize once with `python3 scripts/release.py init-key`; the command
-refuses to overwrite existing keys/trust anchors. To build releases later, restore
-this same private key. Do not generate a replacement key for devices already trusting
-the current key; key rotation needs a signed transition build or USB provisioning.
-There is no insecure or unsigned fallback when the key is missing.
+Network access is the authorization boundary: anyone able to reach the gateway can
+start updates. The RUT240 Wi-Fi password controls access through the router; the
+optional debugging AP has its own password. Keep this HTTP interface on that trusted
+network. Host/Origin checks, CSRF tokens, POST-only start, confirmation and concurrent
+update protection remain in place.
 
-Each HTTPS hop validates certificates and hostnames with ESP-IDF's built-in full
-CA bundle. Only HTTPS redirects are followed, at most five. There is no `setInsecure`
-or HTTP downgrade. The bundle comes from the pinned framework and must be maintained
-as roots change. Network calls have a 5 s timeout, metadata reads are bounded to
-20 s, and image streaming to 180 s. Content-Length must be known; chunked/compressed
-assets are rejected. Manual firmware URLs must end in `/firmware.bin` with no query
-or fragment; their adjacent manifest/signature must exist. Redirect targets may have
-GitHub's signed query parameters. Public GitHub Release assets are expected; private
-release authentication tokens are deliberately not stored or forwarded.
+The device fetches `firmware.manifest` and `firmware.bin` from the same release.
+The unsigned manifest contains device ID, version, image size and SHA-256. Firmware
+checks target, slot size, image integrity and ESP32-S3 application format before
+activation. HTTPS certificates and hostnames are checked on every redirect; HTTP
+downgrades are refused. These checks detect corruption and incompatible images;
+they do not provide a separate publisher signature. Release/account access and the
+trusted local network replace the previous signing/login requirements.
 
-### Build and prepare a release
+Metadata reads are bounded to 20 seconds and firmware streaming to 180 seconds.
+Manual HTTPS URLs must end in `/firmware.bin` without a query or fragment and have
+an adjacent manifest. GitHub redirects may contain long signed query strings; this
+is independent of firmware signing. Public release assets are expected.
 
-Compile only (never uploads):
+### GitHub builds and release assets
+
+`.github/workflows/firmware.yml` follows ESP32-2: pushes to `main`, pull requests and
+manual runs test/build public firmware and retain downloadable workflow artifacts.
+Publishing a GitHub Release triggers the build and attaches `firmware.bin`,
+`firmware.manifest` and `firmware.sha256` automatically. This uses GitHub's
+[release published event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release).
+No signing secret needs to be configured in GitHub.
+
+Set `FIRMWARE_VERSION` before publishing; a release tag such as `v1.2.0` must match
+the code version. Wait for the workflow and asset upload to succeed before updating
+a device. Normal pushes do not publish a release. The workflow must be pushed before
+GitHub can run it; no push or release publication is performed by local scripts.
+
+Run these commands from the directory containing `platformio.ini`:
 
 ```bash
-pio run -e esp32-s3-main
-```
-
-Build, check the 3 MiB slot limit, copy the correct application image, calculate
-SHA-256, sign the manifest and verify that signature with one command:
-
-```bash
+# USB provisioning build, including local credentials if configured:
+platformio run -e esp32-s3-main
+# Public OTA build and local packaging, no upload:
 python3 scripts/release.py build
 ```
 
-The command builds the dedicated `esp32-s3-release` environment. That build completely
-excludes `wifi_secrets.h` and reads credentials from the device NVS at runtime. Its
-source binary is `.pio/build/esp32-s3-release/firmware.bin`. **Never publish a main/USB
-build compiled with local credentials:** ignored headers can still leave passwords
-inside compiled binaries. The release command avoids that leak.
+These are two environments for the same gateway application. `esp32-s3-main` can
+provision local secrets over USB. `esp32-s3-release` excludes the credential header
+and reuses NVS, making it suitable for public distribution. Both share the AP switch.
+Only the release environment is published; never publish a USB/main binary that
+may contain local passwords.
 
-The output is `release/<version>/`:
+Public source binary: `.pio/build/esp32-s3-release/firmware.bin`.
+Local packages: `dist/<version>/firmware.bin`, `firmware.manifest`, `firmware.sha256`.
+`dist/` is ignored and disposable; the old `release/` directory has been removed.
+The packager validates device/version identity, chip, application descriptor and
+3 MiB slot limit. `python3 scripts/release.py package` packages an already built image.
+Use a version-specific release URL for testing rather than `latest`.
 
-- `firmware.bin`
-- `firmware.sha256`
-- `firmware.manifest`
-- `firmware.manifest.sig`
-- `firmware-public.pem` (optional public verification key for operators)
+### One-time transition from signed firmware
 
-The script rejects wrong chip/application/version identity, oversize images and a
-signing key that differs from the public key in the build. Generated files stay
-local and ignored. To publish manually, open GitHub → Releases → Draft a new release,
-select an appropriate version tag (for example `v1.1.0`), attach the first four files,
-and publish when ready. Attach them to **one release**; the device detects mismatched
-assets and refuses activation. For testing use that release's version-specific URL
-instead of `latest`. Neither the script nor firmware creates a GitHub Release.
+Devices running 1.1.3 or earlier still enforce their original signature and login.
+For an OTA transition to 1.2.0, prepare one final signed package locally:
 
-### Update from a phone
+```bash
+python3 scripts/release.py build --legacy-key .secrets/firmware-signing-key.pem
+```
 
-1. Connect the phone to the device AP or the boat router. The ESP32 STA needs internet.
-2. Open the dashboard using the AP or STA IP and check channel 1 and STA status.
-3. Select **Sign in for updates** and enter the configured/generated OTA credentials.
-4. Keep the default firmware URL or enter a version-specific HTTPS `firmware.bin` URL.
-5. Check the confirmation box, press **Update Firmware** and confirm the restart.
-6. Watch download progress, verification, installation and reboot. The sensor panel
-   continues refreshing once per second while the device is available. After reboot,
-   check the new version and wait for the boot self-test to pass.
+This adds `firmware.manifest.sig` and `firmware-public.pem` in `dist/1.2.0/`.
+The key must match the old public anchor in `include/ota_public_key.h`; that header
+is used only by the transition packager and is no longer embedded in firmware.
+Keep the existing private key private and backed up until all old devices migrate.
+Attach the signature alongside the three normal assets to the same release, then
+perform the update using the old login once. Subsequent updates require neither.
+The GitHub workflow does not generate this transition signature.
 
-Internet status checks only `https://github.com/robots.txt`, not every release asset
-or redirect host. `online` therefore does not guarantee OTA connectivity. Firmware
-1.1.1 sizes the HTTP transmit buffer for GitHub's long signed asset URLs (the IDF
-4.4 default of 512 bytes is too short). Connection/request errors now identify the
-failing hostname, ESP error code and TLS/certificate flags without logging signed
-query strings. Certificate and signature checks remain enforced.
-
-The existing `WebServer server(80)` and `/api/sensors` are retained. New endpoints:
-
-| Endpoint | Access | Purpose |
-|---|---|---|
-| `GET /api/system` | Local HTTP | Version, WiFi/channel/internet, slot and rollback status |
-| `GET /api/ota/status` | HTTP Digest authentication | Progress/error and per-boot CSRF token |
-| `POST /api/ota/start` | Digest + same Origin/Host + CSRF + confirmation | Start one worker task |
-
-The POST takes URL-encoded `firmwareUrl` and `confirmation=UPDATE`, with the CSRF
-value in `X-CSRF-Token`. No CORS permission is granted. Foreign origins/hosts and
-cross-site requests are rejected; the page cannot be framed. Progress uses a locked
-snapshot, not shared mutable Strings. The worker leaves the server/sensor loop free;
-flash writes and radio traffic can still briefly affect physical timing. Failed
-attempts abort the inactive slot. Only a fully verified image is selected for boot.
-
-The local web server remains HTTP as requested. Digest avoids sending the password
-as Basic plaintext, but does not encrypt the page, sensors or session. Use a trusted
-AP/LAN, strong credentials and no internet port-forwarding. Signatures authorize the
-image, not browser traffic. This does not enable Secure Boot, flash encryption or
-anti-downgrade eFuses: someone controlling the signing key can authorize older images,
-and physical USB access remains a recovery/provisioning path.
+Alternatively, install `esp32-s3-main` over USB to transition without a signed OTA.
+Neither method needs a full erase. Building/packaging does not upload firmware.
 
 ## Partitions, first install and rollback
 
@@ -325,14 +307,13 @@ formats FAT, erases NVS or uploads a filesystem. Existing NVS credentials surviv
 actual image size and remaining slot space. Do not use merged images, bootloader,
 partition images or filesystem binaries for application OTA.
 
-The old firmware has no pull OTA endpoint, so install the first version via USB
-when you explicitly choose to do so. The layout is compatible with the old table;
-no full erase or data migration is needed. USB recovery remains available. No USB
-installation has been performed as part of this implementation.
+USB remains available for provisioning and recovery. For existing signed OTA
+firmware, use the transition procedure above. The partition layout is compatible;
+no full erase or data migration is needed.
 
 The tested Arduino SDK has `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=1`. The application
 uses `verifyRollbackLater()` to prevent early Arduino confirmation. A pending image
-is confirmed after 30 continuous healthy seconds: initialized ESP-NOW, an AP IP,
+is confirmed after 30 continuous healthy seconds: initialized ESP-NOW, initialized Wi-Fi on channel 1 (and a ready AP only if enabled),
 at least one complete poll cycle, a responsive main loop and more than 30 KB free heap.
 No internet or valid sensor reading is required. Failure to meet those checks within
 90 s requests rollback; an independent timer also resets a stalled main loop. A reset
@@ -345,8 +326,8 @@ bootloader compatibility require the physical tests below. See
 
 Run host policy/release tests with `bash test/run_host_tests.sh`, then compile with
 `pio run -e esp32-s3-main`. The tests cover malformed/wrong-device manifests, bounds,
-unsafe URLs, key creation protection, signing, tampering and release image checks.
+unsafe URLs, unsigned packaging, transition signing, credential exclusion and release image checks.
 They do not simulate the WiFi driver or bootloader. Follow the detailed
 [hardware acceptance plan](docs/ota-test-plan.md) for Modbus, ESP-NOW delivery, AP/STA,
-reconnects, browser authentication/CSRF, missing internet, bad URLs/images, interrupted
+reconnects, AP-disabled operation, browser CSRF protection, missing internet, bad URLs/images, interrupted
 updates, power loss, restart and rollback. These physical tests remain unverified.

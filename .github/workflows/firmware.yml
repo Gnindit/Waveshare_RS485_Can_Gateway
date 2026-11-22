@@ -1,0 +1,55 @@
+name: Firmware
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install platformio==6.2.0
+      - name: Install dashboard test runtime
+        run: sudo apt-get update && sudo apt-get install -y gjs
+      - name: Run host tests
+        run: bash test/run_host_tests.sh
+      - name: Build and package public firmware
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+        run: python scripts/release.py build --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rs485-firmware
+          path: dist/*/*
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rs485-firmware
+          path: dist
+      - name: Attach firmware to the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: find dist -type f -exec gh release upload "$RELEASE_TAG" {} +

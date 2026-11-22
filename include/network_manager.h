@@ -4,8 +4,6 @@
 void setupNetwork();
 void handleNetwork();
 bool networkReady();
-bool networkAccessPointReady();
+bool networkRuntimeReady();
 uint8_t actualWifiChannel();
 String networkStatusJson();
-const char *otaUsername();
-const char *otaPassword();

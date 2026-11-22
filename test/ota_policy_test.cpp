@@ -11,6 +11,10 @@ int main() {
   assert(OtaPolicy::trustedHost("192.168.4.1", "192.168.4.1", "192.168.1.22", true));
   assert(OtaPolicy::trustedHost("192.168.1.22:80", "192.168.4.1", "192.168.1.22", true));
   assert(!OtaPolicy::trustedHost("192.168.1.22", "192.168.4.1", "192.168.1.22", false));
+  assert(OtaPolicy::trustedHost("192.168.1.22", "", "192.168.1.22", true));
+  assert(!OtaPolicy::trustedHost("", "", "192.168.1.22", true));
+  assert(!OtaPolicy::trustedHost(":80", "", "192.168.1.22", true));
+  assert(!OtaPolicy::trustedHost("192.168.4.1", "", "192.168.1.22", true));
   assert(!OtaPolicy::trustedHost("evil.example", "192.168.4.1", "192.168.1.22", true));
   assert(!OtaPolicy::trustedHost("192.168.4.1.evil.example", "192.168.4.1", "192.168.1.22", true));
   assert(OtaPolicy::validStartRequest("192.168.4.1", "http://192.168.4.1", "same-origin", "token", "token", "UPDATE"));

@@ -12,7 +12,7 @@ inline size_t requestBufferSize(size_t urlLength) {
 
 inline bool trustedHost(const std::string &host, const std::string &apIp,
                         const std::string &staIp, bool connected) {
-  return host == apIp || host == apIp + ":80" ||
+  return (!apIp.empty() && (host == apIp || host == apIp + ":80")) ||
       (connected && (host == staIp || host == staIp + ":80"));
 }
 

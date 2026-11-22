@@ -16,13 +16,12 @@
 #endif
 
 namespace {
-String adminPassword;
-String adminUsername;
 String accessPointPassword;
 String accessPointSsid;
 String stationSsid;
 String stationPassword;
 bool apReady = false;
+bool networkInitialized = false;
 bool scanning = false;
 bool connecting = false;
 bool wasConnected = false;
@@ -88,9 +87,10 @@ uint8_t actualWifiChannel() {
   return channel;
 }
 bool networkReady() { return WiFi.status() == WL_CONNECTED && actualWifiChannel() == FirmwareConfig::wifiChannel; }
-bool networkAccessPointReady() { return apReady; }
-const char *otaUsername() { return adminUsername.c_str(); }
-const char *otaPassword() { return adminPassword.c_str(); }
+bool networkRuntimeReady() {
+  return networkInitialized && (!FirmwareConfig::apEnabled || apReady) &&
+      actualWifiChannel() == FirmwareConfig::wifiChannel;
+}
 
 void setupNetwork() {
   WiFi.persistent(false);
@@ -111,10 +111,10 @@ void setupNetwork() {
   // No example/header values can provision secrets in a public release.
   stationSsid = preferences.getString("staSsid", "");
   stationPassword = preferences.getString("staPassword", "");
-  accessPointSsid = preferences.getString("apSsid", "ESP32-S3-RS485");
-  adminUsername = preferences.getString("otaUsername", "admin");
-  accessPointPassword = devicePassword(preferences, "apPassword", 8);
-  adminPassword = devicePassword(preferences, "otaPassword");
+  if (FirmwareConfig::apEnabled) {
+    accessPointSsid = preferences.getString("apSsid", "ESP32-S3-RS485");
+    accessPointPassword = devicePassword(preferences, "apPassword", 8);
+  }
 #else
   stationSsid = savedSetting(preferences, "staSsid", WifiSecrets::staSsid, "", settingsValid);
   if (*WifiSecrets::staSsid) {
@@ -125,33 +125,42 @@ void setupNetwork() {
     }
     stationPassword = WifiSecrets::staPassword;
   } else stationPassword = preferences.getString("staPassword", "");
-  accessPointSsid = savedSetting(preferences, "apSsid", WifiSecrets::apSsid, "ESP32-S3-RS485", settingsValid);
-  adminUsername = savedSetting(preferences, "otaUsername", WifiSecrets::otaUsername, "admin", settingsValid);
-  accessPointPassword = *WifiSecrets::apPassword ? savedSetting(preferences, "apPassword", WifiSecrets::apPassword, "", settingsValid) : devicePassword(preferences, "apPassword", 8);
-  adminPassword = *WifiSecrets::otaPassword ? savedSetting(preferences, "otaPassword", WifiSecrets::otaPassword, "", settingsValid) : devicePassword(preferences, "otaPassword");
+  if (FirmwareConfig::apEnabled) {
+    accessPointSsid = savedSetting(preferences, "apSsid", WifiSecrets::apSsid, "ESP32-S3-RS485", settingsValid);
+    accessPointPassword = *WifiSecrets::apPassword ? savedSetting(preferences, "apPassword", WifiSecrets::apPassword, "", settingsValid) : devicePassword(preferences, "apPassword", 8);
+  }
 #endif
   preferences.end();
-  if (!settingsValid || accessPointPassword.length() < 8 || accessPointPassword.length() > 63 || adminPassword.length() < 16 || adminUsername.isEmpty() ||
-      accessPointSsid.isEmpty() || accessPointSsid.length() > 32 || stationSsid.length() > 32 || stationPassword.length() > 64) {
-    if (Serial) Serial.println("Invalid AP/OTA credentials; network disabled (see wifi_secrets.example.h)");
+  if (!settingsValid || stationSsid.length() > 32 || stationPassword.length() > 64 ||
+      (FirmwareConfig::apEnabled && (accessPointPassword.length() < 8 || accessPointPassword.length() > 63 ||
+       accessPointSsid.isEmpty() || accessPointSsid.length() > 32))) {
+    if (Serial) Serial.println("Invalid WiFi credentials; network disabled (see wifi_secrets.example.h)");
     return;
   }
-  WiFi.mode(WIFI_AP_STA);
+  if (!WiFi.mode(FirmwareConfig::apEnabled ? WIFI_AP_STA : WIFI_STA)) {
+    if (Serial) Serial.println("WiFi mode setup failed");
+    return;
+  }
   WiFi.setAutoReconnect(false); // Reconnect only after a channel-1 scan; never roam silently.
   WiFi.disconnect(false, false);
   WiFi.setSleep(false);
-  apReady = WiFi.softAP(accessPointSsid.c_str(), accessPointPassword.c_str(), FirmwareConfig::wifiChannel);
-  wifi_config_t apConfig = {};
-  if (apReady && esp_wifi_get_config(WIFI_IF_AP, &apConfig) == ESP_OK) {
-    apConfig.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    apReady = esp_wifi_set_config(WIFI_IF_AP, &apConfig) == ESP_OK;
-  } else apReady = false;
+  if (FirmwareConfig::apEnabled) {
+    apReady = WiFi.softAP(accessPointSsid.c_str(), accessPointPassword.c_str(), FirmwareConfig::wifiChannel);
+    wifi_config_t apConfig = {};
+    if (apReady && esp_wifi_get_config(WIFI_IF_AP, &apConfig) == ESP_OK) {
+      apConfig.ap.authmode = WIFI_AUTH_WPA2_PSK;
+      apReady = esp_wifi_set_config(WIFI_IF_AP, &apConfig) == ESP_OK;
+    } else apReady = false;
+  }
   restoreChannel();
+  networkInitialized = !FirmwareConfig::apEnabled || apReady;
   if (Serial) {
-    Serial.printf("Firmware %s | WiFi channel %u | AP %s at %s (%s)\n", FirmwareConfig::version,
-                  actualWifiChannel(), accessPointSsid.c_str(), WiFi.softAPIP().toString().c_str(), apReady ? "ready" : "FAILED");
-    Serial.printf("Device AP password (keep private): %s\n", accessPointPassword.c_str());
-    Serial.printf("Device OTA login (keep private): %s / %s\n", otaUsername(), otaPassword());
+    Serial.printf("Firmware %s | WiFi channel %u | AP %s\n", FirmwareConfig::version,
+                  actualWifiChannel(), FirmwareConfig::apEnabled ? (apReady ? "ready" : "FAILED") : "disabled (use router STA IP)");
+    if (apReady) {
+      Serial.printf("AP %s at %s | password (keep private): %s\n", accessPointSsid.c_str(),
+                    WiFi.softAPIP().toString().c_str(), accessPointPassword.c_str());
+    }
   }
   configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
   lastAttempt = millis() - 30000;
@@ -160,7 +169,7 @@ void setupNetwork() {
 }
 
 void handleNetwork() {
-  if (!apReady) return;
+  if (!networkInitialized) return;
   const uint32_t now = millis();
   if (actualWifiChannel() != FirmwareConfig::wifiChannel) {
     if (Serial) Serial.printf("CHANNEL CONFLICT: actual=%u required=%u; dropping STA to protect ESP-NOW\n", actualWifiChannel(), FirmwareConfig::wifiChannel);
@@ -206,7 +215,7 @@ void handleNetwork() {
     }
     WiFi.scanDelete();
     staState = "routerNotOnChannel1";
-    if (Serial) Serial.println("Router unavailable on channel 1; keeping AP/ESP-NOW on channel 1");
+    if (Serial) Serial.println("Router unavailable on channel 1; keeping ESP-NOW on channel 1");
     return;
   }
   if (now - lastAttempt >= 30000 && !otaBusy()) {
@@ -224,7 +233,8 @@ String networkStatusJson() {
   portEXIT_CRITICAL(&internetMux);
   return String("{\"staConnected\":") + (networkReady() ? "true" : "false") +
       ",\"staState\":" + jsonQuote(staState) + ",\"staIp\":" + jsonQuote(WiFi.localIP().toString()) +
-      ",\"apIp\":" + jsonQuote(WiFi.softAPIP().toString()) + ",\"apReady\":" + (apReady ? "true" : "false") +
+      ",\"apIp\":" + jsonQuote(apReady ? WiFi.softAPIP().toString() : String("")) + ",\"apReady\":" + (apReady ? "true" : "false") +
+      ",\"apEnabled\":" + (FirmwareConfig::apEnabled ? "true" : "false") +
       ",\"rssi\":" + (networkReady() ? String(WiFi.RSSI()) : "null") +
       ",\"wifiChannel\":" + String(actualWifiChannel()) + ",\"requiredChannel\":1,\"internetStatus\":" + jsonQuote(internet) +
       ",\"clockSynchronized\":" + (hasValidClock() ? "true" : "false") + "}";

@@ -3,16 +3,14 @@
 #include "json_utils.h"
 #include "network_manager.h"
 #include "ota_policy.h"
-#include "ota_public_key.h"
 #include "secure_http.h"
 #include <WiFi.h>
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
 #include <esp_timer.h>
-#include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 
-// Keep the build's board/version identity inside the signed image as well.
+// Keep the build's board/version identity inside the application image as well.
 extern const char firmwareIdentity[] __attribute__((used)) =
     "RS485FW|waveshare-esp32-s3-rs485-can|" FIRMWARE_VERSION "|"
 #if defined(GATEWAY_PUBLIC_RELEASE)
@@ -46,37 +44,25 @@ void setStatus(const char *stage, const String &error = "", bool active = true) 
 bool downloadSmall(const String &url, std::string &body, size_t maxLength, String &error) {
   SecureHttp response;
   if (!response.open(url, error)) return false;
-  if (response.length() <= 0 || response.length() > int64_t(maxLength)) { error = "Invalid manifest/signature size"; return false; }
+  if (response.length() <= 0 || response.length() > int64_t(maxLength)) { error = "Invalid manifest size"; return false; }
   body.resize(response.length());
   size_t done = 0;
   const uint32_t started = millis();
   while (done < body.size()) {
     if (!networkReady() || millis() - started > 20000) { error = "Metadata download timed out or STA lost"; return false; }
     const int count = response.read(reinterpret_cast<uint8_t *>(&body[done]), body.size() - done);
-    if (count <= 0) { error = "Incomplete manifest/signature download"; return false; }
+    if (count <= 0) { error = "Incomplete manifest download"; return false; }
     done += count;
     vTaskDelay(1);
   }
   if (!response.complete()) { error = "Metadata response incomplete"; return false; }
   return true;
 }
-bool verifyManifest(const std::string &body, const std::string &signature) {
-  uint8_t hash[32];
-  mbedtls_sha256_ret(reinterpret_cast<const uint8_t *>(body.data()), body.size(), hash, 0);
-  mbedtls_pk_context key;
-  mbedtls_pk_init(&key);
-  bool valid = mbedtls_pk_parse_public_key(&key, reinterpret_cast<const uint8_t *>(otaPublicKey), sizeof(otaPublicKey)) == 0;
-  valid = valid && mbedtls_pk_can_do(&key, MBEDTLS_PK_ECDSA) && mbedtls_pk_get_bitlen(&key) == 256;
-  if (valid) valid = mbedtls_pk_verify(&key, MBEDTLS_MD_SHA256, hash, sizeof(hash),
-                        reinterpret_cast<const uint8_t *>(signature.data()), signature.size()) == 0;
-  mbedtls_pk_free(&key);
-  return valid;
-}
 bool installImage(const String &url, const OtaPolicy::Manifest &manifest,
                   const esp_partition_t *partition, String &error) {
   SecureHttp response;
   if (!response.open(url, error)) return false;
-  if (response.length() != manifest.size) { error = "Firmware Content-Length differs from signed manifest"; return false; }
+  if (response.length() != manifest.size) { error = "Firmware Content-Length differs from manifest"; return false; }
   esp_ota_handle_t handle = 0;
   // Incremental erase keeps flash stalls shorter than erasing the whole slot up front.
   if (esp_ota_begin(partition, OTA_WITH_SEQUENTIAL_WRITES, &handle) != ESP_OK) { error = "Cannot open inactive OTA partition"; return false; }
@@ -147,11 +133,8 @@ void performOta(const String &url) {
   if (!valid) error = "No inactive OTA partition";
   const String base = url.substring(0, url.length() - strlen("firmware.bin"));
   std::string manifestText;
-  std::string signature;
   OtaPolicy::Manifest manifest;
   if (valid) valid = downloadSmall(base + "firmware.manifest", manifestText, 1024, error);
-  if (valid) valid = downloadSmall(base + "firmware.manifest.sig", signature, 128, error);
-  if (valid && !verifyManifest(manifestText, signature)) { error = "Manifest signature invalid or untrusted signing key"; valid = false; }
   if (valid && !OtaPolicy::parseManifest(manifestText, FirmwareConfig::deviceId, partition->size, manifest)) {
     error = "Manifest target, size or format invalid"; valid = false;
   }
@@ -176,7 +159,10 @@ void otaTask(void *argument) {
 // Arduino otherwise accepts a pending OTA before setup(), before our self-test.
 extern "C" bool verifyRollbackLater() { return true; }
 
-bool otaConfigured() { return strlen(otaPublicKey) > 0; }
+bool otaConfigured() {
+  const esp_partition_t *slot = esp_ota_get_next_update_partition(nullptr);
+  return slot && slot != esp_ota_get_running_partition();
+}
 bool otaBusy() {
   portENTER_CRITICAL(&statusMux);
   const bool active = status.active;
@@ -201,7 +187,7 @@ void setupOta() {
     }
   }
   if (Serial) Serial.printf("Image identity: %s\n", firmwareIdentity);
-  if (Serial) Serial.printf("OTA signing key: %s | rollback self-test: %s\n", otaConfigured() ? "configured" : "MISSING (OTA disabled)", selfTestState);
+  if (Serial) Serial.printf("OTA partition: %s | rollback self-test: %s\n", otaConfigured() ? "configured" : "unavailable", selfTestState);
 }
 void handleOtaSelfTest(bool runtimeHealthy) {
   if (!pendingVerification) return;
@@ -221,7 +207,7 @@ void handleOtaSelfTest(bool runtimeHealthy) {
   }
 }
 bool startOta(const String &url, String &error) {
-  if (!otaConfigured()) { error = "No trusted firmware signing key configured"; return false; }
+  if (!otaConfigured()) { error = "No inactive OTA partition configured"; return false; }
   if (pendingVerification) { error = "Wait for boot self-test to pass"; return false; }
   if (!networkReady()) { error = "STA must be connected on channel 1"; return false; }
   if (!hasValidClock()) { error = "Waiting for SNTP time; cannot verify TLS certificates"; return false; }

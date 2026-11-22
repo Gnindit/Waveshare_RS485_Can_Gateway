@@ -31,18 +31,15 @@ void securityHeaders() {
 
 bool trustedHost() {
   const String host = server.hostHeader();
-  const String ap = WiFi.softAPIP().toString();
+  const String ap = FirmwareConfig::apEnabled ? WiFi.softAPIP().toString() : String("");
   const String sta = WiFi.localIP().toString();
   return OtaPolicy::trustedHost(host.c_str(), ap.c_str(), sta.c_str(), WiFi.status() == WL_CONNECTED);
 }
 
-bool requireOtaAuth() {
+bool requireOtaAccess() {
   securityHeaders();
   if (!trustedHost()) { server.send(403, "application/json", "{\"error\":\"Use the device IP address\"}"); return false; }
-  if (!*otaPassword()) { server.send(503, "application/json", "{\"error\":\"OTA login not configured\"}"); return false; }
-  if (server.header("Authorization").startsWith("Digest ") && server.authenticate(otaUsername(), otaPassword())) return true;
-  server.requestAuthentication(DIGEST_AUTH, "Gateway firmware update");
-  return false;
+  return true;
 }
 
 void handleSystem() {
@@ -59,7 +56,7 @@ void handleSystem() {
 }
 
 void handleOtaStatus() {
-  if (!requireOtaAuth()) return;
+  if (!requireOtaAccess()) return;
   String json = otaStatusJson();
   json.remove(json.length() - 1);
   json += ",\"csrfToken\":" + jsonQuote(csrfToken) + "}";
@@ -67,7 +64,7 @@ void handleOtaStatus() {
 }
 
 void handleOtaStart() {
-  if (!requireOtaAuth()) return;
+  if (!requireOtaAccess()) return;
   const String origin = server.header("Origin");
   const String fetchSite = server.header("Sec-Fetch-Site");
   if (!OtaPolicy::validStartRequest(server.hostHeader().c_str(), origin.c_str(), fetchSite.c_str(),
@@ -187,8 +184,8 @@ void setupSensorWebServer(const SensorReading *readings,
   server.on("/api/ota/status", HTTP_GET, handleOtaStatus);
   server.on("/api/ota/start", HTTP_POST, handleOtaStart);
   server.on("/ota/login", HTTP_GET, []() {
-    if (!requireOtaAuth()) return;
-    server.sendHeader("Location", "/?ota=unlocked");
+    if (!requireOtaAccess()) return;
+    server.sendHeader("Location", "/");
     server.send(303);
   });
   server.on("/", handleIndex);

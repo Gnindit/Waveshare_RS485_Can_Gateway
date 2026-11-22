@@ -102,7 +102,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     .firmware-update { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 20px; }
     label { display: block; margin: 14px 0 6px; }
     input[type="url"] { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
-    button, .login-link { display: inline-block; padding: 12px 16px; border-radius: 8px; background: var(--accent); color: white; border: 0; font: inherit; cursor: pointer; }
+    button { display: inline-block; padding: 12px 16px; border-radius: 8px; background: var(--accent); color: white; border: 0; font: inherit; cursor: pointer; }
     button:disabled { opacity: 0.5; cursor: default; }
     progress { width: 100%; height: 22px; margin-top: 14px; }
     .ota-message { overflow-wrap: anywhere; white-space: pre-wrap; margin-top: 12px; }
@@ -122,7 +122,6 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <section class="firmware-update" aria-labelledby="firmwareTitle">
       <h2 id="firmwareTitle">Firmware Update</h2>
       <p>Current firmware: <strong id="firmwareVersion">Loading...</strong></p>
-      <p style="margin-top:12px"><a class="login-link" href="/ota/login" id="otaLogin">Sign in for updates</a></p>
       <form id="otaForm">
         <label for="firmwareUrl">Firmware URL (HTTPS)</label>
         <input type="url" id="firmwareUrl" name="firmwareUrl" required maxlength="512" spellcheck="false" autocomplete="off">
@@ -130,7 +129,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <button type="submit" id="updateFirmware" disabled>Update Firmware</button>
       </form>
       <progress id="otaProgress" value="0" max="100" aria-label="Firmware download progress"></progress>
-      <p id="otaMessage" class="ota-message" role="status" aria-live="polite">Sign in to enable firmware updates.</p>
+      <p id="otaMessage" class="ota-message" role="status" aria-live="polite">Loading update status...</p>
     </section>
   </main>
   <script>
@@ -217,7 +216,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('firmwareVersion').textContent = data.firmwareVersion;
         document.getElementById('systemInfo').textContent =
           `STA: ${network.staConnected ? 'Connected' : 'Disconnected'} (${network.staState}) | ` +
-          `STA IP: ${network.staIp} | AP IP: ${network.apIp} | ` +
+          `STA IP: ${network.staIp} | AP: ${network.apEnabled ? network.apIp : 'disabled'} | ` +
           `RSSI: ${network.rssi === null ? 'N/A' : network.rssi + ' dBm'} | ` +
           `WiFi channel: ${network.wifiChannel} (required: ${network.requiredChannel}) | ` +
           `Internet: ${network.internetStatus} | Boot self-test: ${data.ota.selfTest}`;
@@ -236,7 +235,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       otaLoading = true;
       try {
         const response = await fetchWithTimeout('/api/ota/status');
-        if (!response.ok) throw new Error('Sign in again to view update status.');
+        if (!response.ok) throw new Error('Update status unavailable. Retrying...');
         const data = await response.json();
         csrfToken = data.csrfToken;
         otaActive = data.active;
@@ -244,7 +243,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('otaProgress').value = percent;
         const labels = {
           idle: 'Ready. Select the firmware URL and confirm the update.',
-          manifest: 'Verifying signed firmware manifest...',
+          manifest: 'Checking firmware manifest...',
           downloading: `Downloading firmware: ${percent}% (${data.downloaded} / ${data.total} bytes)`,
           verifying: 'Verifying firmware integrity...',
           installing: 'Installing verified firmware...',
@@ -252,7 +251,6 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
           error: `Update failed: ${data.error}`
         };
         document.getElementById('otaMessage').textContent = labels[data.stage] || data.stage;
-        document.getElementById('otaLogin').textContent = 'Signed in — sign in again if needed';
       } catch (error) {
         document.getElementById('otaMessage').textContent = otaActive ? 'Device restarting or unavailable. Reconnecting...' : error.message;
       } finally { otaLoading = false; updateOtaButton(); }
@@ -290,13 +288,12 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       pageLeaving = false;
       refreshSensors();
       refreshSystem();
-      if (new URLSearchParams(window.location.search).get('ota') === 'unlocked') refreshOta();
+      refreshOta();
       dashboardTimers.push(setInterval(refreshSensors, 1000));
       dashboardTimers.push(setInterval(refreshSystem, 5000));
-      dashboardTimers.push(setInterval(() => { if (csrfToken) refreshOta(); }, 1000));
+      dashboardTimers.push(setInterval(refreshOta, 1000));
     }
 
-    document.getElementById('otaLogin').addEventListener('click', stopDashboardPolling);
     window.addEventListener('pagehide', stopDashboardPolling);
     window.addEventListener('pageshow', startDashboardPolling);
     startDashboardPolling();

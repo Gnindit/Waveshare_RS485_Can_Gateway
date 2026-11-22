@@ -1,0 +1,5 @@
+; Copy to platformio.local.ini to select a local USB port.
+; Leave unset for automatic port detection.
+[env:esp32-s3-main]
+; upload_port = /dev/ttyACM0
+; monitor_port = /dev/ttyACM0

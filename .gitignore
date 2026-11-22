@@ -35,3 +35,6 @@ Thumbs.db
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Local USB ports and machine-specific PlatformIO overrides
+/platformio.local.ini

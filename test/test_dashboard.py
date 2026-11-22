@@ -7,7 +7,7 @@ import unittest
 
 class DashboardTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("gjs"), "GJS JavaScript runtime is not installed")
-    def test_slow_requests_and_login_navigation(self):
+    def test_slow_requests_and_page_navigation(self):
         page = (Path(__file__).resolve().parents[1] / "include/sensor_page.h").read_text()
         source = page.split("<script>", 1)[1].split("</script>", 1)[0]
         harness = r'''
@@ -23,7 +23,7 @@ const document = { getElementById(id) {
   if (!elements.has(id)) elements.set(id, { handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; } });
   return elements.get(id);
 }};
-const window = { location: { search: '' }, addEventListener() {} };
+const window = { handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; } };
 class AbortController {
   constructor() { this.signal = { aborted: false, listeners: [] }; }
   abort() {
@@ -32,10 +32,11 @@ class AbortController {
     this.signal.listeners.forEach(fn => fn());
   }
 }
-class URLSearchParams { get() { return null; } }
 function fetch(url, options) {
-  calls.push({ url, signal: options.signal });
-  return new Promise((resolve, reject) => options.signal.listeners.push(() => reject(new Error('aborted'))));
+  return new Promise((resolve, reject) => {
+    calls.push({ url, signal: options.signal, resolve });
+    options.signal.listeners.push(() => reject(new Error('aborted')));
+  });
 }
 function setTimeout(fn, ms) { const id = nextId++; timers.set(id, fn); return id; }
 function clearTimeout(id) { timers.delete(id); }
@@ -43,26 +44,39 @@ function setInterval(fn, ms) { const id = nextId++; intervals.set(id, fn); retur
 function clearInterval(id) { intervals.delete(id); }
 '''
         checks = r'''
-assert(calls.length === 2, 'Initial sensor and system requests expected');
-for (let i = 0; i < 10; i++) { refreshSensors(); refreshSystem(); }
-assert(calls.length === 2, 'Slow responses must not queue overlapping polls');
+assert(calls.length === 3, 'Initial sensor, system and OTA requests expected without login');
+for (let i = 0; i < 10; i++) { refreshSensors(); refreshSystem(); refreshOta(); }
+assert(calls.length === 3, 'Slow responses must not queue overlapping polls');
 assert(intervals.size === 3, 'Expected one timer per dashboard poll');
-elements.get('otaLogin').handlers.click();
-assert(intervals.size === 0, 'Login navigation must stop polling timers');
-assert(calls.every(call => call.signal.aborted), 'Login navigation must abort pending HTTP requests');
+window.handlers.pagehide();
+assert(intervals.size === 0, 'Page navigation must stop polling timers');
+assert(calls.every(call => call.signal.aborted), 'Page navigation must abort pending HTTP requests');
 for (let i = 0; i < 10; i++) await Promise.resolve();
 assert(pendingRequests.size === 0 && timers.size === 0, 'Aborted requests must release controllers and timers');
 assert(!sensorsLoading && !systemLoading, 'Aborted requests must release in-flight guards');
 await refreshSensors();
 await refreshSystem();
-assert(calls.length === 2, 'No polling while navigating to authentication');
+assert(calls.length === 3, 'No polling while leaving the page');
 startDashboardPolling();
-assert(calls.length === 4 && intervals.size === 3, 'Polling must resume on browser back/pageshow');
+assert(calls.length === 6 && intervals.size === 3, 'Polling must resume on browser back/pageshow');
 startDashboardPolling();
-assert(calls.length === 4 && intervals.size === 3, 'Repeated pageshow must not duplicate polling');
+assert(calls.length === 6 && intervals.size === 3, 'Repeated pageshow must not duplicate polling');
+calls.findLast(call => call.url === '/api/system').resolve({ ok: true, json: async () => ({
+  network: { staConnected: true, staState: 'connected', staIp: '192.168.1.22', apEnabled: false,
+    apIp: '', rssi: -50, wifiChannel: 1, requiredChannel: 1, internetStatus: 'online' },
+  ota: { configured: true, selfTest: 'passed' }, firmwareVersion: '1.2.0',
+  defaultFirmwareUrl: 'https://example.com/firmware.bin'
+}) });
+calls.findLast(call => call.url === '/api/ota/status').resolve({ ok: true, json: async () => ({
+  csrfToken: 'device-token', active: false, total: 0, downloaded: 0, stage: 'idle'
+}) });
+for (let i = 0; i < 20; i++) await Promise.resolve();
+assert(csrfToken === 'device-token', 'OTA token must load without login');
+assert(elements.get('updateFirmware').disabled === false, 'Connected gateway must enable updates without login');
+assert(elements.get('systemInfo').textContent.includes('AP: disabled'), 'AP-off status must be shown');
 stopDashboardPolling();
 for (let i = 0; i < 10; i++) await Promise.resolve();
-print('Dashboard slow-response, login cancellation and polling-resume checks passed');
+print('Dashboard slow-response, navigation cancellation and polling-resume checks passed');
 '''
         program = harness + "\nasync function run() {\n" + source + checks + "\n}\n"
         program += "const loop = new GLib.MainLoop(null, false);\n"

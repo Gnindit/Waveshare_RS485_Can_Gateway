@@ -222,7 +222,7 @@ void setupEspNow() {
   memcpy(peerInfo.peer_addr, ESP_NOW_BROADCAST_MAC, 6);
   peerInfo.channel = WIFI_AP_CHANNEL;
   peerInfo.encrypt = false;
-  peerInfo.ifidx = WIFI_IF_AP;
+  peerInfo.ifidx = FirmwareConfig::apEnabled ? WIFI_IF_AP : WIFI_IF_STA;
 
   if (!esp_now_is_peer_exist(ESP_NOW_BROADCAST_MAC) &&
       esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -638,7 +638,7 @@ void setup() {
 void loop() {
   handleNetwork();
   handleSensorWebClient();
-  handleOtaSelfTest(espNowReady && networkAccessPointReady() &&
+  handleOtaSelfTest(espNowReady && networkRuntimeReady() &&
                     pollCycleCount >= 1 && ESP.getFreeHeap() > 30000);
 
   if (millis() - lastPollMs >= POLL_INTERVAL_MS) {

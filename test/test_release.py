@@ -26,42 +26,68 @@ class ReleaseTest(unittest.TestCase):
             self.assertNotEqual(usb.returncode, 0)
             self.assertIn(b"LOCAL_CREDENTIAL_HEADER_INCLUDED", usb.stderr)
 
-    def test_signed_artifacts_and_tampering(self):
+    def makeImage(self):
+        image = bytearray(2048)
+        image[0] = 0xE9
+        struct.pack_into("<H", image, 12, 9)
+        struct.pack_into("<I", image, 32, 0xABCD5432)
+        identity = f"RS485FW|{release.deviceId}|1.2.0|publicRelease|".encode()
+        image[512:512+len(identity)] = identity
+        return image
+
+    def test_unsigned_artifacts_and_invalid_images(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            key = directory / "key.pem"
-            header = directory / "public.h"
-            release.initKey(key, header)
-            self.assertEqual(key.stat().st_mode & 0o777, 0o600)
-            with self.assertRaises(SystemExit):
-                release.initKey(key, header)
-            image = bytearray(2048)
-            image[0] = 0xE9
-            struct.pack_into("<H", image, 12, 9)
-            struct.pack_into("<I", image, 32, 0xABCD5432)
-            identity = f"RS485FW|{release.deviceId}|1.1.0|publicRelease|".encode()
-            image[512:512+len(identity)] = identity
-            public = release.publicPem(key)
-            image[1024:1024+len(public)] = public
+            image = self.makeImage()
             firmware = directory / "firmware.bin"
             firmware.write_bytes(image)
             output = directory / "release"
-            release.prepareArtifacts(firmware, output, key, "1.1.0")
+            output.mkdir()
+            (output / "firmware.manifest.sig").write_text("stale signature")
+            release.prepareArtifacts(firmware, output, "1.2.0")
+            self.assertEqual({p.name for p in output.iterdir()},
+                             {"firmware.bin", "firmware.sha256", "firmware.manifest"})
             self.assertEqual((output / "firmware.bin").read_bytes(), image)
-            self.assertTrue((output / "firmware.sha256").read_text().startswith(hashlib.sha256(image).hexdigest()))
-            manifest = output / "firmware.manifest"
-            manifest.write_bytes(manifest.read_bytes().replace(b"version=1.1.0", b"version=9.9.9"))
-            verification = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(output / "firmware-public.pem"),
-                                           "-signature", str(output / "firmware.manifest.sig"), str(manifest)], capture_output=True)
-            self.assertNotEqual(verification.returncode, 0)
-            image[12] = 0
-            with self.assertRaises(ValueError):
-                release.validateImage(image, "1.1.0")
-            image[12] = 9
+            digest = hashlib.sha256(image).hexdigest()
+            self.assertEqual((output / "firmware.sha256").read_text(), f"{digest}  firmware.bin\n")
+            self.assertIn(f"sha256={digest}\n", (output / "firmware.manifest").read_text())
+            for offset in [0, 12, 32, 512]:
+                broken = image.copy()
+                broken[offset] = 0
+                with self.assertRaises(ValueError):
+                    release.validateImage(broken, "1.2.0")
             with self.assertRaises(ValueError):
                 release.validateImage(image, "wrong-version")
             with self.assertRaises(ValueError):
-                release.validateImage(bytes(release.slotSize + 1), "1.1.0")
+                release.validateImage(bytes(release.slotSize + 1), "1.2.0")
+
+    def test_legacy_transition_signature(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            key = directory / "key.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "EC", "-pkeyopt",
+                            "ec_paramgen_curve:P-256", "-out", str(key)], check=True)
+            public = subprocess.check_output(["openssl", "pkey", "-in", str(key), "-pubout"])
+            header = directory / "legacy.h"
+            header.write_bytes(public)
+            firmware = directory / "firmware.bin"
+            firmware.write_bytes(self.makeImage())
+            output = directory / "release"
+            release.prepareArtifacts(firmware, output, "1.2.0", key, header)
+            manifest = output / "firmware.manifest"
+            manifest.write_bytes(manifest.read_bytes().replace(b"version=1.2.0", b"version=9.9.9"))
+            verification = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(output / "firmware-public.pem"),
+                                           "-signature", str(output / "firmware.manifest.sig"), str(manifest)], capture_output=True)
+            self.assertNotEqual(verification.returncode, 0)
+            header.write_text("wrong public key")
+            with self.assertRaises(ValueError):
+                release.prepareArtifacts(firmware, output, "1.2.0", key, header)
+
+    def test_mismatched_release_tag(self):
+        result = subprocess.run(["python3", str(root / "scripts/release.py"), "package",
+                                 "--release-tag", "v0.0.0"], capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"Release tag must match", result.stderr)
 
 
 if __name__ == "__main__":
